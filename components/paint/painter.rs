@@ -367,10 +367,15 @@ impl Painter {
     pub(crate) fn needs_repaint(&self) -> bool {
         let repaint_reason = self.needs_repaint.get();
         if repaint_reason.is_empty() {
+            // Avoid log spam: only log a state change.
             return false;
         }
-
-        !self.refresh_driver.wait_to_paint()
+        let wait = self.refresh_driver.wait_to_paint();
+        eprintln!(
+            "DBG[4] Painter::needs_repaint reason_bits=0x{:02x} wait_to_paint={} -> {}",
+            repaint_reason.bits(), wait, !wait
+        );
+        !wait
     }
 
     /// Returns true if any animation callbacks (ie `requestAnimationFrame`) are waiting for a response.
@@ -1392,13 +1397,19 @@ impl Painter {
         rect: Option<WebViewRect>,
         callback: Box<dyn FnOnce(Result<RgbaImage, ScreenshotCaptureError>) + 'static>,
     ) {
+        eprintln!(
+            "DBG[5] Painter::request_screenshot webview={:?} rect_some={}",
+            webview_id, rect.is_some()
+        );
         let Some(webview) = self.webview_renderers.get(&webview_id) else {
+            eprintln!("DBG[5a] Painter::request_screenshot UNKNOWN webview {:?}, dropping callback!", webview_id);
             return;
         };
 
         let rect = rect.map(|rect| rect.as_device_rect(webview.device_pixels_per_page_pixel()));
         self.screenshot_taker
             .request_screenshot(webview_id, rect, callback);
+        eprintln!("DBG[5b] Painter::request_screenshot -> sent to screenshot_taker + RequestScreenshotReadiness");
         self.send_to_constellation(EmbedderToConstellationMessage::RequestScreenshotReadiness(
             webview_id,
         ));
@@ -1445,11 +1456,16 @@ impl Painter {
     }
 
     pub(crate) fn handle_new_webrender_frame_ready(&self, repaint_needed: bool) {
+        let anim = self.animation_callbacks_running();
+        eprintln!(
+            "DBG[3] Painter::handle_new_webrender_frame_ready repaint_needed={} animations_running={}",
+            repaint_needed, anim
+        );
         if repaint_needed {
             self.refresh_cursor()
         }
 
-        if repaint_needed || self.animation_callbacks_running() {
+        if repaint_needed || anim {
             self.set_needs_repaint(RepaintReason::NewWebRenderFrame);
         }
 
@@ -1457,6 +1473,7 @@ impl Painter {
         // is the last frame that was pending. In that case, trigger a manual repaint so
         // that the screenshot can be taken at the end of the repaint procedure.
         if !repaint_needed {
+            eprintln!("DBG[3a] Painter: !repaint_needed -> screenshot_taker.maybe_trigger_paint_for_screenshot");
             self.screenshot_taker
                 .maybe_trigger_paint_for_screenshot(self);
         }

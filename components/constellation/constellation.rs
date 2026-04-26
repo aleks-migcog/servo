@@ -5225,6 +5225,7 @@ where
 
     #[servo_tracing::instrument(skip_all)]
     fn handle_activate_document_msg(&mut self, pipeline_id: PipelineId) {
+        eprintln!("DBG[10] Constellation::handle_activate_document_msg pipeline={:?}", pipeline_id);
         debug!("{}: Document ready to activate", pipeline_id);
 
         // Find the pending change whose new pipeline id is pipeline_id.
@@ -5233,6 +5234,7 @@ where
             .iter()
             .rposition(|change| change.new_pipeline_id == pipeline_id)
         else {
+            eprintln!("DBG[10a] no pending_change for pipeline={:?}, returning", pipeline_id);
             return;
         };
 
@@ -5298,6 +5300,7 @@ where
 
     #[servo_tracing::instrument(skip_all)]
     fn handle_request_screenshot_readiness(&mut self, webview_id: WebViewId) {
+        eprintln!("DBG[7] Constellation::handle_request_screenshot_readiness webview={:?}", webview_id);
         self.screenshot_readiness_requests
             .push(ScreenshotReadinessRequest {
                 webview_id,
@@ -5310,8 +5313,16 @@ where
     fn send_screenshot_readiness_requests_to_pipelines(&mut self) {
         // If there are pending loads, wait for those to complete.
         if !self.pending_changes.is_empty() {
+            eprintln!(
+                "DBG[8a] send_screenshot_readiness_requests_to_pipelines: {} pending_changes - bailing",
+                self.pending_changes.len()
+            );
             return;
         }
+        eprintln!(
+            "DBG[8] send_screenshot_readiness_requests_to_pipelines requests={}",
+            self.screenshot_readiness_requests.len()
+        );
 
         for screenshot_request in &self.screenshot_readiness_requests {
             // Ignore this request if it is not pending.
@@ -5319,25 +5330,46 @@ where
                 return;
             }
 
+            let active_count = self.fully_active_browsing_contexts_iter(screenshot_request.webview_id).count();
+            let bc_id = servo_base::id::BrowsingContextId::from(screenshot_request.webview_id);
+            let bc_known = self.browsing_contexts.contains_key(&bc_id);
+            let total_bcs = self.browsing_contexts.len();
+            let total_pipelines = self.pipelines.len();
+            eprintln!(
+                "DBG[8c] active browsing contexts for webview={:?}: {} | bc_id={:?} bc_known={} total_bcs={} total_pipelines={}",
+                screenshot_request.webview_id, active_count, bc_id, bc_known, total_bcs, total_pipelines
+            );
+            // List all BCs to see what we have
+            for (id, bc) in &self.browsing_contexts {
+                eprintln!("DBG[8g] known BC: id={:?} pipeline={:?} viewport={}x{}",
+                    id, bc.pipeline_id, bc.viewport_details.size.width, bc.viewport_details.size.height);
+            }
             *screenshot_request.pipeline_states.borrow_mut() =
                 self.fully_active_browsing_contexts_iter(screenshot_request.webview_id)
                     .filter_map(|browsing_context| {
                         let pipeline_id = browsing_context.pipeline_id;
                         let Some(pipeline) = self.pipelines.get(&pipeline_id) else {
-                            // This can happen while Servo is shutting down, so just ignore it for now.
+                            eprintln!("DBG[8d] skip: pipeline {:?} not in self.pipelines", pipeline_id);
                             return None;
                         };
-                        // If the rectangle for this BrowsingContext is zero, it will never be
-                        // painted. In this case, don't query screenshot readiness as it won't
-                        // contribute to the final output image.
-                        if browsing_context.viewport_details.size == Size2D::zero() {
+                        let vp = browsing_context.viewport_details.size;
+                        eprintln!(
+                            "DBG[8e] candidate pipeline={:?} viewport={}x{}",
+                            pipeline_id, vp.width, vp.height
+                        );
+                        if vp == Size2D::zero() {
+                            eprintln!("DBG[8f] skip: viewport zero for pipeline {:?}", pipeline_id);
                             return None;
                         }
-                        let _ = pipeline.event_loop.send(
+                        let send_res = pipeline.event_loop.send(
                             ScriptThreadMessage::RequestScreenshotReadiness(
                                 pipeline.webview_id,
                                 pipeline_id,
                             ),
+                        );
+                        eprintln!(
+                            "DBG[8b] -> ScriptThreadMessage::RequestScreenshotReadiness pipeline={:?} send_ok={}",
+                            pipeline_id, send_res.is_ok()
                         );
                         Some((pipeline_id, None))
                     })
@@ -5354,6 +5386,12 @@ where
         updated_pipeline_id: PipelineId,
         response: ScreenshotReadinessResponse,
     ) {
+        eprintln!(
+            "DBG[9] Constellation::handle_screenshot_readiness_response pipeline={:?} response={:?} pending_requests={}",
+            updated_pipeline_id,
+            match &response { ScreenshotReadinessResponse::Ready(_) => "Ready(_)", ScreenshotReadinessResponse::NoLongerActive => "NoLongerActive" },
+            self.screenshot_readiness_requests.len()
+        );
         if self.screenshot_readiness_requests.is_empty() {
             return;
         }

@@ -711,6 +711,10 @@ impl Paint {
         let mut saw_webrender_frame_ready_for_painter = HashMap::new();
         messages.retain(|message| match message {
             PaintMessage::NewWebRenderFrameReady(painter_id, _document_id, need_repaint) => {
+                eprintln!(
+                    "DBG[2] Paint::handle_messages NewWebRenderFrameReady painter={:?} need_repaint={}",
+                    painter_id, need_repaint
+                );
                 if let Some(painter) = self.maybe_painter(*painter_id) {
                     painter.decrement_pending_frames();
                     *saw_webrender_frame_ready_for_painter

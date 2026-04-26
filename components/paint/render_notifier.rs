@@ -37,6 +37,10 @@ impl webrender_api::RenderNotifier for RenderNotifier {
         _: FramePublishId,
         frame_ready_params: &FrameReadyParams,
     ) {
+        eprintln!(
+            "DBG[1] RenderNotifier::new_frame_ready painter={:?} doc={:?} render={}",
+            self.painter_id, document_id, frame_ready_params.render
+        );
         self.paint_proxy.send(PaintMessage::NewWebRenderFrameReady(
             self.painter_id,
             document_id,

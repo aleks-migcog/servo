@@ -84,6 +84,10 @@ impl ScreenshotTaker {
         expected_epochs: FxHashMap<PipelineId, Epoch>,
         renderer: &Painter,
     ) {
+        eprintln!(
+            "DBG[6] ScreenshotTaker::handle_screenshot_readiness_reply webview={:?} epochs_count={}",
+            webview_id, expected_epochs.len()
+        );
         let expected_epochs = Rc::new(expected_epochs);
 
         for screenshot_request in self.requests.borrow_mut().iter_mut() {
