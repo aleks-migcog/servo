@@ -1226,6 +1226,14 @@ where
     }
 
     fn add_pending_change(&mut self, change: SessionHistoryChange) {
+        eprintln!(
+            "DBG[11] Constellation::add_pending_change webview={:?} bc={:?} new_pipeline={:?} replace={} new_bc_info={}",
+            change.webview_id,
+            change.browsing_context_id,
+            change.new_pipeline_id,
+            change.replace.is_some(),
+            change.new_browsing_context_info.is_some(),
+        );
         debug!(
             "adding pending session history change with {}",
             if change.replace.is_some() {
@@ -3992,6 +4000,10 @@ where
 
     #[servo_tracing::instrument(skip_all)]
     fn handle_abort_load_url_msg(&mut self, new_pipeline_id: PipelineId) {
+        eprintln!(
+            "DBG[13] handle_abort_load_url_msg pipeline={:?}",
+            new_pipeline_id
+        );
         let pending_index = self
             .pending_changes
             .iter()
@@ -5242,8 +5254,6 @@ where
         // the active document of its frame.
         let change = self.pending_changes.swap_remove(pending_index);
 
-        self.send_screenshot_readiness_requests_to_pipelines();
-
         // Notify the parent (if there is one).
         let parent_pipeline_id = match change.new_browsing_context_info {
             // This will be a new browsing context.
@@ -5272,6 +5282,15 @@ where
             }
         }
         self.change_session_history(change);
+
+        // Re-evaluate pending screenshot requests now that the BC exists in
+        // self.browsing_contexts. Previously this call ran BEFORE
+        // change_session_history, so for the very first activation of a
+        // WebView (when no BC existed yet) the iteration found 0 active BCs,
+        // set state to WaitingOnScript with an empty pipeline_states map, and
+        // the screenshot request was stuck forever.
+        eprintln!("DBG[14] handle_activate_document_msg: re-evaluating screenshot requests AFTER change_session_history");
+        self.send_screenshot_readiness_requests_to_pipelines();
     }
 
     /// Called when the window is resized.
@@ -5780,6 +5799,10 @@ where
             .iter()
             .position(|change| change.new_pipeline_id == pipeline_id);
         if let Some(pending_index) = pending_index {
+            eprintln!(
+                "DBG[12] close_pipeline: removing pending_change for pipeline={:?} BEFORE activation",
+                pipeline_id
+            );
             self.pending_changes.remove(pending_index);
         }
 
