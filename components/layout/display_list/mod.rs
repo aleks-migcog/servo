@@ -1305,10 +1305,28 @@ impl<'a> BuilderForBoxFragment<'a> {
             .paint_info
             .external_scroll_id_for_scroll_tree_node(builder.current_scroll_node_id);
 
-        let mut common = builder.common_properties(rect, &self.fragment.style());
-        if let Some(clip_chain_id) = self.border_edge_clip(builder, false) {
-            common.clip_chain_id = clip_chain_id;
-        }
+        // This helper is only reached for the synthetic
+        // `is_hit_test_for_scrollable_overflow` fragment (see the early branch in
+        // `build` above). That fragment is bound to the inner scrolled spatial
+        // node so its rect follows the scroll offset, but we MUST inherit the
+        // outer scrollport clip — the one created in
+        // `build_overflow_frame_if_necessary` and parented to the parent scroll
+        // node — so the clip stays fixed in world space at the padding box.
+        //
+        // Calling `border_edge_clip()` here would create a fresh
+        // border-radius clip parented to `current_scroll_node_id` (= the inner
+        // scrolled node) via `maybe_create_clip` -> `add_clip_to_display_list`.
+        // After horizontal/vertical scroll, that scrolled clip rejects every
+        // cursor whose projected local point falls outside the styled-host's
+        // border rect, leaving only the root viewport fallback hit and routing
+        // wheel events to the document root scroll node — the bug observed on
+        // ISSUE_6 (`078_overflow_scroll_8.html` carousel). Corner clipping is
+        // already baked into the overflow scrollport clip's `border_radius` at
+        // `stacking_context.rs:1570-1575`, so dropping the border_edge override
+        // here loses no rounded-corner behaviour. Per CSS Overflow L3 the
+        // scrollport (the padding box) is the stable interactive region for
+        // scrolling gestures.
+        let common = builder.common_properties(rect, &self.fragment.style());
         builder.wr().push_hit_test(
             common.clip_rect,
             common.clip_chain_id,
