@@ -941,6 +941,12 @@ impl Painter {
     /// flat list of device-pixel scrollbar metrics. Used by
     /// `su_get_scroll_frames` (ISSUE_4 phase 2) to drive Unity-side
     /// scrollbar overlays.
+    ///
+    /// Only walks pipelines reachable from the current root pipeline. Servo
+    /// keeps `PipelineDetails` for navigated-away or otherwise dead pipelines
+    /// alive in `self.pipelines` until the embedder explicitly tears them
+    /// down, so iterating the raw map would surface stale scroll frames from
+    /// previous pages and stack them on top of the current view.
     pub fn collect_scroll_frames(
         &self,
         webview_id: WebViewId,
@@ -951,11 +957,11 @@ impl Painter {
         };
 
         let device_scale = webview_renderer.device_pixels_per_page_pixel().get();
-        for pipeline_details in webview_renderer.pipelines.values() {
+        webview_renderer.for_each_connected_pipeline(&mut |pipeline_details| {
             pipeline_details
                 .scroll_tree
                 .collect_scroll_frame_metrics(device_scale, out);
-        }
+        });
     }
 
     pub(crate) fn scroll_node_by_delta(
