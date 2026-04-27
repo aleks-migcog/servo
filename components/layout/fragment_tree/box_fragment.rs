@@ -296,7 +296,7 @@ impl BoxFragment {
         // overflow together, but from the specification it seems that if the border
         // box of an item is in the "wholly unreachable scrollable overflow region", but
         // its scrollable overflow is not, it should also be excluded.
-        let scrollable_overflow = self
+        let mut scrollable_overflow = self
             .children
             .iter()
             .fold(physical_padding_rect, |acc, child| {
@@ -315,6 +315,40 @@ impl BoxFragment {
                     );
                 acc.union(&scrollable_overflow_from_child)
             });
+
+        // Implement the last bullet of <https://drafts.csswg.org/css-overflow-3/#scrollable>:
+        //
+        //   "Additional padding added to the scrollable overflow rectangle as
+        //   necessary to enable scroll positions that satisfy the requirements of
+        //   both `place-content: start` and `place-content: end` alignment."
+        //
+        // For scroll containers whose children overflow past the padding box,
+        // grow the scrollable rect on the overflowing side(s) by the matching
+        // padding so the user can scroll the trailing padding into view (and
+        // similarly the leading padding for negative-margin overflow). This
+        // matches what `taffy-unity`'s flex/grid/block paths do via
+        // `scrollable_overflow.outset_by(padding)` after gathering children.
+        if self.style().establishes_scroll_container(self.base.flags) {
+            let padding_min = physical_padding_rect.min();
+            let padding_max = physical_padding_rect.max();
+            let overflow_min = scrollable_overflow.min();
+            let overflow_max = scrollable_overflow.max();
+
+            if overflow_max.x > padding_max.x {
+                scrollable_overflow.size.width += self.padding.right;
+            }
+            if overflow_max.y > padding_max.y {
+                scrollable_overflow.size.height += self.padding.bottom;
+            }
+            if overflow_min.x < padding_min.x {
+                scrollable_overflow.origin.x -= self.padding.left;
+                scrollable_overflow.size.width += self.padding.left;
+            }
+            if overflow_min.y < padding_min.y {
+                scrollable_overflow.origin.y -= self.padding.top;
+                scrollable_overflow.size.height += self.padding.top;
+            }
+        }
 
         // Fragments with `IS_COLLAPSED` (currently only table cells that are part of
         // table tracks with `visibility: collapse`) should not contribute to scrollable
