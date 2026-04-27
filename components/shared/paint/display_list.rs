@@ -788,6 +788,72 @@ impl ScrollTree {
         root_node.invalidate_cached_transforms(self, false /* ancestors_invalid */);
     }
 
+    /// Walk every scrollable node in this tree and emit a flat `ScrollFrameMetrics`
+    /// snapshot in device pixels. `device_scale` should already include page zoom,
+    /// hidpi, and pinch zoom (i.e. the value of
+    /// `WebViewRenderer::device_pixels_per_page_pixel`).
+    ///
+    /// Each frame's viewport rect is transformed through its **parent**'s cumulative
+    /// `node_to_root_transform`, so nested scrollers position correctly against the
+    /// root document. Used by the FFI layer (`su_get_scroll_frames`) to drive
+    /// embedder-rendered scrollbar overlays.
+    pub fn collect_scroll_frame_metrics(&self, device_scale: f32, out: &mut Vec<ScrollFrameMetrics>) {
+        for (index, node) in self.nodes.iter().enumerate() {
+            let SpatialTreeNodeInfo::Scroll(ref info) = node.info else {
+                continue;
+            };
+
+            let parent_transform = node
+                .parent
+                .map(|parent_id| self.cumulative_node_to_root_transform(parent_id))
+                .unwrap_or_default();
+
+            // Transform the four corners of the viewport rect through the parent's
+            // cumulative transform and rebuild an axis-aligned bounding rect. For
+            // pure translations (the usual scroll case) this is exact; for rotated
+            // ancestors it gives a sane overlay-fitting AABB.
+            let p_min = parent_transform
+                .transform_point2d(info.clip_rect.min)
+                .unwrap_or(info.clip_rect.min);
+            let p_max = parent_transform
+                .transform_point2d(info.clip_rect.max)
+                .unwrap_or(info.clip_rect.max);
+            let world_min_x = p_min.x.min(p_max.x);
+            let world_min_y = p_min.y.min(p_max.y);
+            let world_max_x = p_min.x.max(p_max.x);
+            let world_max_y = p_min.y.max(p_max.y);
+
+            let scrollable = info.scrollable_size();
+            let max_offset_x = scrollable.width.max(0.0);
+            let max_offset_y = scrollable.height.max(0.0);
+
+            let scrollable_x =
+                info.scroll_sensitivity.x.contains(ScrollType::InputEvents) && max_offset_x > 0.0;
+            let scrollable_y =
+                info.scroll_sensitivity.y.contains(ScrollType::InputEvents) && max_offset_y > 0.0;
+
+            let _ = index;
+
+            out.push(ScrollFrameMetrics {
+                external_id_u64: info.external_id.0,
+                pipeline_namespace: info.external_id.1.0,
+                pipeline_index: info.external_id.1.1,
+                viewport_x: world_min_x * device_scale,
+                viewport_y: world_min_y * device_scale,
+                viewport_w: (world_max_x - world_min_x) * device_scale,
+                viewport_h: (world_max_y - world_min_y) * device_scale,
+                content_w: info.content_rect.width() * device_scale,
+                content_h: info.content_rect.height() * device_scale,
+                offset_x: info.offset.x * device_scale,
+                offset_y: info.offset.y * device_scale,
+                max_offset_x: max_offset_x * device_scale,
+                max_offset_y: max_offset_y * device_scale,
+                scrollable_x,
+                scrollable_y,
+            });
+        }
+    }
+
     fn external_scroll_id_for_scroll_tree_node(
         &self,
         id: ScrollTreeNodeId,
@@ -803,6 +869,38 @@ impl ScrollTree {
 
         None
     }
+}
+
+/// A flat per-scroll-frame metrics snapshot, used by embedders that render their
+/// own scrollbars on top of Servo's framebuffer (ISSUE_4 phase 2 - native
+/// scrollbars). Coordinates are in DEVICE pixels (post-pinch, post-page-zoom),
+/// matching the surface that the embedder presents.
+///
+/// Identity is `(external_id_u64, pipeline_namespace, pipeline_index)` -
+/// see `webrender_api::ExternalScrollId(u64, PipelineId(u32, u32))`.
+#[derive(Clone, Copy, Debug)]
+pub struct ScrollFrameMetrics {
+    pub external_id_u64: u64,
+    pub pipeline_namespace: u32,
+    pub pipeline_index: u32,
+    /// Viewport (clip rect) in device pixels, transformed to the root frame's
+    /// coordinate system via the parent's cumulative transform.
+    pub viewport_x: f32,
+    pub viewport_y: f32,
+    pub viewport_w: f32,
+    pub viewport_h: f32,
+    /// Total scrollable content size in device pixels.
+    pub content_w: f32,
+    pub content_h: f32,
+    /// Current scroll offset of this frame in device pixels.
+    pub offset_x: f32,
+    pub offset_y: f32,
+    /// Maximum scroll offset (`content - viewport`, clamped >= 0) in device pixels.
+    pub max_offset_x: f32,
+    pub max_offset_y: f32,
+    /// True if the axis is sensitive to user input AND has scrollable extent.
+    pub scrollable_x: bool,
+    pub scrollable_y: bool,
 }
 
 /// In order to pretty print the [ScrollTree] structure, we are converting

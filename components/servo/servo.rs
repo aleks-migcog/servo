@@ -1050,6 +1050,49 @@ impl Servo {
         &self.0.site_data_manager
     }
 
+    /// Snapshot device-pixel scroll-frame metrics for a single WebView.
+    /// Used by embedders that render their own scrollbar overlays on top of
+    /// Servo's framebuffer (ISSUE_4 phase 2). The returned rects, sizes, and
+    /// offsets are all in device pixels (pinch + page-zoom + hidpi already
+    /// applied), so the embedder can map them back to its surface using the
+    /// same coordinate system its input events already use.
+    pub fn collect_scroll_frames(
+        &self,
+        webview_id: WebViewId,
+    ) -> Vec<paint_api::display_list::ScrollFrameMetrics> {
+        let mut out = Vec::new();
+        self.0
+            .paint
+            .borrow()
+            .collect_scroll_frames(webview_id, &mut out);
+        out
+    }
+
+    /// Apply an absolute scroll offset (in DEVICE pixels) to a single scroll
+    /// node, then push the resulting offset to WebRender via a fresh
+    /// transaction (ISSUE_4 phase 2 - embedder thumb-drag / track-click write
+    /// back). Uses `ScrollType::InputEvents` so it honours `overflow:hidden` /
+    /// per-axis `scroll_sensitivity`. Returns true if the node was found and
+    /// the offset applied.
+    ///
+    /// The offset is converted to layout pixels internally using the same
+    /// `device_pixels_per_page_pixel` value that `collect_scroll_frames` uses
+    /// to expose offsets out, so the round-trip stays consistent.
+    pub fn scroll_node_to_offset(
+        &self,
+        webview_id: WebViewId,
+        pipeline_id: webrender_api::PipelineId,
+        external_scroll_id: webrender_api::ExternalScrollId,
+        offset_device_px: webrender_api::units::LayoutVector2D,
+    ) -> bool {
+        self.0.paint.borrow().scroll_node_to_offset(
+            webview_id,
+            pipeline_id,
+            external_scroll_id,
+            offset_device_px,
+        )
+    }
+
     pub(crate) fn paint<'a>(&'a self) -> Ref<'a, Paint> {
         self.0.paint.borrow()
     }

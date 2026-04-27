@@ -872,6 +872,92 @@ impl Painter {
         self.send_transaction(txn);
     }
 
+    /// Set the absolute scroll offset of a single scroll node, then push the
+    /// resulting offset through WebRender via a fresh transaction (mirrors
+    /// `scroll_node_by_delta` but for an absolute target offset, with
+    /// `ScrollType::InputEvents` semantics so it honours
+    /// `scroll_sensitivity` and respects `overflow:hidden`).
+    ///
+    /// Used by the embedder-rendered scrollbar overlay (ISSUE_4 phase 2 -
+    /// thumb drag / track click) to write back through the same
+    /// scroll-tree + WR transaction path the wheel/script paths use.
+    /// Without the WR transaction the Servo paint scroll tree would be
+    /// out of sync with the compositor and the rendered surface would
+    /// not move.
+    pub fn scroll_node_to_offset(
+        &mut self,
+        webview_id: WebViewId,
+        pipeline_id: WebRenderPipelineId,
+        external_scroll_id: webrender_api::ExternalScrollId,
+        offset_device_px: LayoutVector2D,
+    ) -> bool {
+        let Some(webview_renderer) = self.webview_renderers.get_mut(&webview_id) else {
+            return false;
+        };
+
+        // Convert from device pixels (the surface coordinate space the embedder
+        // reads via `collect_scroll_frames`) into layout pixels (what the scroll
+        // tree stores internally). `device_pixels_per_page_pixel` already
+        // includes hidpi, page zoom, and pinch zoom.
+        let device_scale = webview_renderer.device_pixels_per_page_pixel().get();
+        let scale = if device_scale.abs() > f32::EPSILON {
+            device_scale
+        } else {
+            1.0
+        };
+        let offset = LayoutVector2D::new(offset_device_px.x / scale, offset_device_px.y / scale);
+
+        let pipeline_id = pipeline_id.into();
+        let Some(pipeline_details) = webview_renderer.pipelines.get_mut(&pipeline_id) else {
+            return false;
+        };
+
+        let Some(applied) = pipeline_details
+            .scroll_tree
+            .set_scroll_offset_for_node_with_external_scroll_id(
+                external_scroll_id,
+                offset,
+                ScrollType::InputEvents,
+            )
+        else {
+            return false;
+        };
+
+        let mut transaction = Transaction::new();
+        transaction.set_scroll_offsets(
+            external_scroll_id,
+            vec![SampledScrollOffset {
+                offset: applied,
+                generation: 0,
+            }],
+        );
+
+        self.generate_frame(&mut transaction, RenderReasons::APZ);
+        self.send_transaction(transaction);
+        true
+    }
+
+    /// Snapshot the per-pipeline scroll trees of the given WebView into a
+    /// flat list of device-pixel scrollbar metrics. Used by
+    /// `su_get_scroll_frames` (ISSUE_4 phase 2) to drive Unity-side
+    /// scrollbar overlays.
+    pub fn collect_scroll_frames(
+        &self,
+        webview_id: WebViewId,
+        out: &mut Vec<paint_api::display_list::ScrollFrameMetrics>,
+    ) {
+        let Some(webview_renderer) = self.webview_renderers.get(&webview_id) else {
+            return;
+        };
+
+        let device_scale = webview_renderer.device_pixels_per_page_pixel().get();
+        for pipeline_details in webview_renderer.pipelines.values() {
+            pipeline_details
+                .scroll_tree
+                .collect_scroll_frame_metrics(device_scale, out);
+        }
+    }
+
     pub(crate) fn scroll_node_by_delta(
         &mut self,
         webview_id: WebViewId,

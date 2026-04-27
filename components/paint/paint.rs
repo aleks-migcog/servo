@@ -44,8 +44,10 @@ use webgl::webgl_thread::WebGLContextBusyMap;
 #[cfg(feature = "webgpu")]
 use webgpu::canvas_context::WebGpuExternalImageMap;
 use webrender::{CaptureBits, MemoryReport};
-use webrender_api::units::{DevicePixel, DevicePoint};
-use webrender_api::{FontInstanceKey, FontKey, ImageKey};
+use webrender_api::units::{DevicePixel, DevicePoint, LayoutVector2D};
+use webrender_api::{
+    ExternalScrollId, FontInstanceKey, FontKey, ImageKey, PipelineId as WebRenderPipelineId,
+};
 
 use crate::InitialPaintState;
 use crate::painter::Painter;
@@ -327,6 +329,35 @@ impl Paint {
             .iter()
             .flat_map(|painter| painter.borrow().webviews_needing_repaint())
             .collect()
+    }
+
+    /// Snapshot device-pixel scroll-frame metrics for the given WebView (ISSUE_4
+    /// phase 2). Walks every painter; the painter that owns this WebView writes
+    /// into `out`. Caller pre-allocates / clears `out`.
+    pub fn collect_scroll_frames(
+        &self,
+        webview_id: WebViewId,
+        out: &mut Vec<paint_api::display_list::ScrollFrameMetrics>,
+    ) {
+        if let Some(painter) = self.maybe_painter(webview_id.into()) {
+            painter.collect_scroll_frames(webview_id, out);
+        }
+    }
+
+    /// Set the absolute scroll offset of a single scroll node (ISSUE_4 phase 2)
+    /// and push the resulting offset to WebRender via a fresh transaction.
+    /// Returns true if the node was found and the offset applied.
+    pub fn scroll_node_to_offset(
+        &self,
+        webview_id: WebViewId,
+        pipeline_id: WebRenderPipelineId,
+        external_scroll_id: ExternalScrollId,
+        offset: LayoutVector2D,
+    ) -> bool {
+        let Some(mut painter) = self.maybe_painter_mut(webview_id.into()) else {
+            return false;
+        };
+        painter.scroll_node_to_offset(webview_id, pipeline_id, external_scroll_id, offset)
     }
 
     pub fn finish_shutting_down(&self) {

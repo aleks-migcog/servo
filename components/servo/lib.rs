@@ -72,7 +72,9 @@ pub use style::Zero;
 pub use style_traits::CSSPixel;
 pub use webrender_api::units::{
     DeviceIntPoint, DeviceIntRect, DeviceIntSize, DevicePixel, DevicePoint, DeviceVector2D,
+    LayoutVector2D,
 };
+pub use webrender_api::{ExternalScrollId, PipelineId as WebRenderPipelineId};
 
 pub use crate::clipboard_delegate::{ClipboardDelegate, StringRequest};
 #[cfg(feature = "gamepad")]
