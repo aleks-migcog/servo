@@ -5,6 +5,8 @@
 use std::cell::Cell;
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::time::Instant;
 
 use crossbeam_channel::Sender;
 use embedder_traits::{
@@ -75,6 +77,57 @@ pub(crate) enum PinchZoomResult {
     DidNotPinchZoom,
 }
 
+/// Per-WebView state for an active wheel gesture's scroll latch. Set on the
+/// first wheel event of a gesture (after a regular `scroll_node_or_ancestor`
+/// promotion so a saturated inner can still hand off at gesture *start*) and
+/// cleared on idle timeout, on cursor leaving the latched scroll subtree, or
+/// on cursor drifting more than `WHEEL_LATCH_SLOP_PX` from the gesture's
+/// origin point. While set, subsequent wheel events scroll the latched
+/// node directly; reaching the bound consumes the delta with no chaining.
+#[derive(Clone, Debug)]
+pub(crate) struct WheelLatch {
+    pub pipeline_id: PipelineId,
+    pub external_scroll_id: ExternalScrollId,
+    pub last_event_time: Instant,
+    /// Cursor position when the gesture's latch was first established. Used
+    /// to detect cursor drift on `MouseMove` events: if the pointer moves
+    /// more than `WHEEL_LATCH_SLOP_PX` from this anchor, the latch breaks
+    /// immediately so the next wheel re-evaluates which scroll node should
+    /// own the gesture.
+    pub first_point: DevicePoint,
+}
+
+/// Idle gap after which a wheel gesture is considered ended. Matches
+/// Chromium's `kDefaultMouseWheelLatchingTransaction` (500ms) used as the
+/// synthetic gesture-end timeout on systems without OS scroll-phase events.
+/// See `content/browser/renderer_host/input/mouse_wheel_phase_handler.h`.
+pub(crate) const WHEEL_LATCH_IDLE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(500);
+
+/// Cursor-drift slop, in device pixels, that breaks an active wheel
+/// gesture's latch on a `MouseMove`. Matches Chromium's
+/// `kWheelLatchingSlopRegion = 10.0` from
+/// `content/browser/renderer_host/input/mouse_wheel_phase_handler.h`.
+/// Once the cursor has moved more than this from the latch's anchor
+/// point, treat the next wheel event as the start of a fresh gesture.
+pub(crate) const WHEEL_LATCH_SLOP_PX: f32 = 10.0;
+
+/// Process-wide flag controlling wheel-gesture scroll latching. Default
+/// `true` (gesture-scoped latch, browser parity with Chromium / Firefox).
+/// When `false`, every wheel event re-evaluates and chains to ancestors at
+/// the bound (the pre-ISSUE_7 behaviour, retained as an opt-out for
+/// embedders that prefer eager handoff). Toggled via the FFI in
+/// `servo-unity/src/ServoUnityFFI/src/lib.rs`.
+static WHEEL_GESTURE_LATCH_ENABLED: AtomicBool = AtomicBool::new(true);
+
+pub fn set_wheel_gesture_latch_enabled(enabled: bool) {
+    WHEEL_GESTURE_LATCH_ENABLED.store(enabled, AtomicOrdering::Relaxed);
+}
+
+pub fn wheel_gesture_latch_enabled() -> bool {
+    WHEEL_GESTURE_LATCH_ENABLED.load(AtomicOrdering::Relaxed)
+}
+
 /// A renderer for a libservo `WebView`. This is essentially the [`ServoRenderer`]'s interface to a
 /// libservo `WebView`, but the code here cannot depend on libservo in order to prevent circular
 /// dependencies, which is why we store a `dyn WebViewTrait` here instead of the `WebView` itself.
@@ -97,6 +150,14 @@ pub(crate) struct WebViewRenderer {
     /// but are waiting for processing. When they are handled by script, they may trigger
     /// scroll events depending on whether `preventDefault()` was called on the event.
     pending_wheel_events: FxHashMap<InputEventId, WheelEvent>,
+    /// Latch for the active wheel gesture: pin the scroll target so further wheel
+    /// deltas in the same continuous gesture do not chain to ancestors when the
+    /// pinned node hits its bound. Cleared after `WHEEL_LATCH_IDLE_TIMEOUT` of
+    /// silence (browser-style gesture-end detection without OS phase events) or
+    /// when the cursor leaves the latched scroll container's hit-test subtree.
+    /// Mirrors Chromium's `mouse_wheel_phase_handler` semantics, scoped to the
+    /// embedder. See ISSUE_7_0427.
+    wheel_latch: Option<WheelLatch>,
     /// Touch input state machine
     touch_handler: TouchHandler,
     /// "Desktop-style" zoom that resizes the viewport to fit the window.
@@ -148,6 +209,7 @@ impl WebViewRenderer {
             touch_handler: TouchHandler::new(webview_id),
             pending_scroll_zoom_events: Default::default(),
             pending_wheel_events: Default::default(),
+            wheel_latch: None,
             page_zoom: DEFAULT_PAGE_ZOOM,
             pinch_zoom: PinchZoom::new(rect),
             hidpi_scale_factor: Scale::new(hidpi_scale_factor.0),
@@ -414,6 +476,26 @@ impl WebViewRenderer {
         repaint_reason: &Cell<RepaintReason>,
         event_and_id: InputEventAndId,
     ) -> bool {
+        // ISSUE_7B_0427: cursor-drift slop. Break the wheel-gesture latch
+        // when the pointer moves more than `WHEEL_LATCH_SLOP_PX` from the
+        // gesture's anchor, mirroring Chromium's `kWheelLatchingSlopRegion`
+        // (`mouse_wheel_phase_handler.h`). Without this, a brief pause
+        // shorter than the 500ms idle timeout traps the user inside the
+        // saturated inner scroller; "moving the cursor" is the canonical
+        // escape hatch the operator was relying on.
+        if let InputEvent::MouseMove(ref mouse_move_event) = event_and_id.event {
+            if let Some(latch) = self.wheel_latch.as_ref() {
+                let cursor = mouse_move_event
+                    .point
+                    .as_device_point(self.device_pixels_per_page_pixel());
+                let dx = cursor.x - latch.first_point.x;
+                let dy = cursor.y - latch.first_point.y;
+                if dx * dx + dy * dy > WHEEL_LATCH_SLOP_PX * WHEEL_LATCH_SLOP_PX {
+                    self.wheel_latch = None;
+                }
+            }
+        }
+
         if let InputEvent::Touch(touch_event) = event_and_id.event {
             return self.on_touch_event(render_api, repaint_reason, touch_event, event_and_id.id);
         }
@@ -872,6 +954,69 @@ impl WebViewRenderer {
             .map(|result| vec![result])
             .unwrap_or_else(|| self.hit_test(render_api, cursor));
 
+        // ISSUE_7_0427: wheel-gesture scroll latching.
+        //
+        // If the latch is enabled and still fresh (within the idle timeout)
+        // AND the cursor's current hit-test still resolves to a descendant of
+        // the latched scroll subtree, route this wheel event directly to the
+        // latched node via `scroll_node_exact` — no ancestor walk, no chain
+        // mid-gesture, at-bound deltas are consumed. This matches Chromium's
+        // mouse-wheel latching (see comments on `WheelLatch`).
+        let latch_enabled = wheel_gesture_latch_enabled();
+        let now = Instant::now();
+        if latch_enabled {
+            if let Some(latch) = self.wheel_latch.clone() {
+                if now.duration_since(latch.last_event_time) > WHEEL_LATCH_IDLE_TIMEOUT {
+                    self.wheel_latch = None;
+                } else if let Some(pipeline_details) = self.pipelines.get_mut(&latch.pipeline_id) {
+                    let cursor_in_subtree = hit_test_results.iter().any(|r| {
+                        r.pipeline_id == latch.pipeline_id &&
+                            pipeline_details
+                                .scroll_tree
+                                .is_descendant_of_or_equal(
+                                    r.external_scroll_id,
+                                    latch.external_scroll_id,
+                                )
+                    });
+                    if cursor_in_subtree {
+                        let scroll_result = pipeline_details.scroll_tree.scroll_node_exact(
+                            latch.external_scroll_id,
+                            scroll_location,
+                            ScrollType::InputEvents,
+                        );
+                        // Bump the latch timestamp on every wheel event of the
+                        // gesture (movement OR at-bound), so a long pin-against
+                        // -bound hold doesn't expire mid-gesture.
+                        if let Some(existing) = self.wheel_latch.as_mut() {
+                            existing.last_event_time = now;
+                        }
+                        if let Some((external_scroll_id, offset)) = scroll_result {
+                            // Reuse the first hit-test result for routing; the
+                            // pipeline_id is what matters for downstream code.
+                            let hit_test_result = hit_test_results
+                                .iter()
+                                .find(|r| r.pipeline_id == latch.pipeline_id)
+                                .cloned()
+                                .unwrap_or_else(|| hit_test_results[0].clone());
+                            return Some(ScrollResult {
+                                hit_test_result,
+                                external_scroll_id,
+                                offset,
+                            });
+                        }
+                        // At-bound: consume the wheel without chaining.
+                        return None;
+                    }
+                    // Cursor left the latched subtree — drop the latch and
+                    // re-evaluate as a fresh gesture below.
+                    self.wheel_latch = None;
+                } else {
+                    // Latched pipeline disappeared (navigation, iframe close).
+                    self.wheel_latch = None;
+                }
+            }
+        }
+
         // Iterate through all hit test results, processing only the first node of each pipeline.
         // This is needed to propagate the scroll events from a pipeline representing an iframe to
         // its ancestor pipelines.
@@ -896,6 +1041,19 @@ impl WebViewRenderer {
                         hit_test_result.clone(),
                         self.device_pixels_per_page_pixel(),
                     );
+                    // ISSUE_7_0427: pin this scroll target for the rest of
+                    // the wheel gesture. The first event of a gesture still
+                    // walks ancestors above so a saturated inner correctly
+                    // promotes to its outer; subsequent events take the
+                    // latched path above.
+                    if latch_enabled {
+                        self.wheel_latch = Some(WheelLatch {
+                            pipeline_id: hit_test_result.pipeline_id,
+                            external_scroll_id,
+                            last_event_time: now,
+                            first_point: cursor,
+                        });
+                    }
                     return Some(ScrollResult {
                         hit_test_result,
                         external_scroll_id,

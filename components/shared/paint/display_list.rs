@@ -531,6 +531,53 @@ impl ScrollTree {
         result
     }
 
+    /// Scroll the scroll node with the given [`ExternalScrollId`] on this scroll tree, but
+    /// **without** falling back to ancestors when at bound. Returns the node id and new
+    /// offset if a scroll was performed, otherwise `None`. Used by the wheel-gesture latch
+    /// to keep wheel deltas pinned to the latched scroll node for the duration of one
+    /// continuous gesture (matches Chromium's mouse-wheel latching: deltas at the bound
+    /// are consumed, not chained mid-gesture; see
+    /// `content/browser/renderer_host/input/mouse_wheel_phase_handler`).
+    pub fn scroll_node_exact(
+        &mut self,
+        external_id: ExternalScrollId,
+        scroll_location: ScrollLocation,
+        context: ScrollType,
+    ) -> Option<(ExternalScrollId, LayoutVector2D)> {
+        let scroll_node_id = self.node_with_external_scroll_node_id(external_id)?;
+        let node = self.get_node_mut(scroll_node_id);
+        let result = node.scroll(scroll_location, context);
+        if result.is_some() {
+            self.invalidate_cached_transforms();
+        }
+        result
+    }
+
+    /// Returns true if `descendant` is the same node as `ancestor` or anywhere below it
+    /// in the scroll tree. Used by the wheel-gesture latch to verify the current cursor
+    /// hit-test result still belongs to the latched scroll container's subtree before
+    /// reusing the latch (cursor-leaves-hit-area policy).
+    pub fn is_descendant_of_or_equal(
+        &self,
+        descendant: ExternalScrollId,
+        ancestor: ExternalScrollId,
+    ) -> bool {
+        let Some(start) = self.node_with_external_scroll_node_id(descendant) else {
+            return false;
+        };
+        let Some(target) = self.node_with_external_scroll_node_id(ancestor) else {
+            return false;
+        };
+        let mut current = Some(start);
+        while let Some(id) = current {
+            if id == target {
+                return true;
+            }
+            current = self.get_node(id).parent;
+        }
+        false
+    }
+
     /// Given an [`ExternalScrollId`] and an offset, update the scroll offset of the scroll node
     /// with the given id.
     pub fn set_scroll_offset_for_node_with_external_scroll_id(

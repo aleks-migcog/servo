@@ -17,6 +17,9 @@ use servo_constellation_traits::EmbedderToConstellationMessage;
 use webxr::WebXrRegistry;
 
 pub use crate::paint::{Paint, WebRenderDebugOption};
+pub use crate::webview_renderer::{
+    set_wheel_gesture_latch_enabled, wheel_gesture_latch_enabled,
+};
 
 #[macro_use]
 mod tracing;
