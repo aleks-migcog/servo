@@ -121,11 +121,18 @@ impl ScreenshotTaker {
             };
 
             if pipelines.iter().all(|(pipeline_id, expected_epoch)| {
-                webview
-                    .pipelines
-                    .get(pipeline_id)
-                    .and_then(|pipeline| pipeline.display_list_epoch)
-                    .is_some_and(|epoch| epoch >= *expected_epoch)
+                match webview.pipelines.get(pipeline_id) {
+                    // Pipeline closed (e.g. superseded by a rapid navigation
+                    // sequence). Treat as ready - the constellation has
+                    // already cleaned up its tracking via close_pipeline ->
+                    // handle_screenshot_readiness_response(NoLongerActive),
+                    // and there is no future event that would let this
+                    // request advance otherwise. ISSUE_8.
+                    None => true,
+                    Some(pipeline) => pipeline
+                        .display_list_epoch
+                        .is_some_and(|epoch| epoch >= *expected_epoch),
+                }
             }) {
                 screenshot_request.phase = ScreenshotRequestPhase::WaitingOnFrame;
                 any_became_ready = true;
