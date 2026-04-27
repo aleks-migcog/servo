@@ -173,17 +173,53 @@ pub(super) fn build_linear(
     let mut color_stops =
         gradient_items_to_color_stops(style, items, Au::from_f32_px(gradient_line_length));
     let stops = fixup_stops(&mut color_stops);
-    let extend_mode = if flags.contains(GradientFlags::REPEATING) {
-        wr::ExtendMode::Repeat
-    } else {
-        wr::ExtendMode::Clamp
-    };
+    let (start_point, end_point, stops, extend_mode) =
+        prepare_repeating_linear(start_point, end_point, stops, flags);
     WebRenderGradient::Linear(builder.wr().create_gradient(
         start_point,
         end_point,
         stops,
         extend_mode,
     ))
+}
+
+/// For `repeating-linear-gradient`, WebRender's `ExtendMode::Repeat` tiles the
+/// `[start_point, end_point]` segment outwards, so that segment must span exactly
+/// one period of the pattern (the distance between the first and last stops),
+/// not the full gradient line. This rebuilds the inputs accordingly. For non-
+/// repeating gradients the inputs pass through unchanged.
+fn prepare_repeating_linear(
+    start_point: units::LayoutPoint,
+    end_point: units::LayoutPoint,
+    stops: Vec<wr::GradientStop>,
+    flags: GradientFlags,
+) -> (
+    units::LayoutPoint,
+    units::LayoutPoint,
+    Vec<wr::GradientStop>,
+    wr::ExtendMode,
+) {
+    if !flags.contains(GradientFlags::REPEATING) || stops.len() < 2 {
+        return (start_point, end_point, stops, wr::ExtendMode::Clamp);
+    }
+    let first_offset = stops.first().unwrap().offset;
+    let last_offset = stops.last().unwrap().offset;
+    let period = last_offset - first_offset;
+    if period <= f32::EPSILON {
+        // Degenerate (all stops at the same position); fall back to clamp.
+        return (start_point, end_point, stops, wr::ExtendMode::Clamp);
+    }
+    let line_vec = end_point - start_point;
+    let new_start = start_point + line_vec * first_offset;
+    let new_end = start_point + line_vec * last_offset;
+    let new_stops = stops
+        .into_iter()
+        .map(|s| wr::GradientStop {
+            offset: (s.offset - first_offset) / period,
+            color: s.color,
+        })
+        .collect();
+    (new_start, new_end, new_stops, wr::ExtendMode::Repeat)
 }
 
 /// <https://drafts.csswg.org/css-images-3/#radial-gradients>
@@ -392,10 +428,17 @@ fn gradient_items_to_color_stops(
                     position: Some(if gradient_line_length.is_zero() {
                         0.
                     } else {
-                        position
+                        // Resolve the stop position to absolute pixels, then divide
+                        // by the gradient-line length in pixels. Doing the division
+                        // in f32 (instead of `Au::scale_by` which rounds back to
+                        // integer Au) preserves sub-Au precision, which is required
+                        // for fine-grained stops (e.g. `repeating-linear-gradient`
+                        // with 2px and 4px stops on a 200px line, where both would
+                        // otherwise collapse to the same rounded Au offset).
+                        let stop_px = position
                             .to_used_value(gradient_line_length)
-                            .scale_by(1. / gradient_line_length.to_f32_px())
-                            .to_f32_px()
+                            .to_f32_px();
+                        stop_px / gradient_line_length.to_f32_px()
                     }),
                 }),
                 // FIXME: approximate like in:
