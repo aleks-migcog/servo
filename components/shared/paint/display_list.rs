@@ -803,25 +803,40 @@ impl ScrollTree {
                 continue;
             };
 
-            let parent_transform = node
-                .parent
-                .map(|parent_id| self.cumulative_node_to_root_transform(parent_id))
-                .unwrap_or_default();
+            // World-space (root) AABB for this scroll node's viewport. Each
+            // node's clip_rect lives in its parent's coordinate space, so we
+            // run it through the parent's cumulative `node_to_root_transform`.
+            let world_clip = transform_world_clip(self, node.parent, info.clip_rect);
+            let mut world_min_x = world_clip.0;
+            let mut world_min_y = world_clip.1;
+            let mut world_max_x = world_clip.2;
+            let mut world_max_y = world_clip.3;
 
-            // Transform the four corners of the viewport rect through the parent's
-            // cumulative transform and rebuild an axis-aligned bounding rect. For
-            // pure translations (the usual scroll case) this is exact; for rotated
-            // ancestors it gives a sane overlay-fitting AABB.
-            let p_min = parent_transform
-                .transform_point2d(info.clip_rect.min)
-                .unwrap_or(info.clip_rect.min);
-            let p_max = parent_transform
-                .transform_point2d(info.clip_rect.max)
-                .unwrap_or(info.clip_rect.max);
-            let world_min_x = p_min.x.min(p_max.x);
-            let world_min_y = p_min.y.min(p_max.y);
-            let world_max_x = p_min.x.max(p_max.x);
-            let world_max_y = p_min.y.max(p_max.y);
+            // Intersect with every ancestor Scroll node's world-space clip
+            // rect, so a nested scroller's viewport never extends past the
+            // outer scroller's scrollport (e.g. when the outer is scrolled
+            // and the inner partially leaves its viewport). Mirrors what the
+            // browser does visually - inner scrollbars get clipped by outer
+            // scrollers.
+            let mut current = node.parent;
+            while let Some(parent_id) = current {
+                let parent_node = self.get_node(parent_id);
+                if let SpatialTreeNodeInfo::Scroll(parent_info) = &parent_node.info {
+                    let pclip =
+                        transform_world_clip(self, parent_node.parent, parent_info.clip_rect);
+                    world_min_x = world_min_x.max(pclip.0);
+                    world_min_y = world_min_y.max(pclip.1);
+                    world_max_x = world_max_x.min(pclip.2);
+                    world_max_y = world_max_y.min(pclip.3);
+                }
+                current = parent_node.parent;
+            }
+
+            // Empty intersection: skip emitting (overlay would render zero
+            // pixels anyway).
+            if world_max_x <= world_min_x || world_max_y <= world_min_y {
+                continue;
+            }
 
             let scrollable = info.scrollable_size();
             let max_offset_x = scrollable.width.max(0.0);
@@ -869,6 +884,27 @@ impl ScrollTree {
 
         None
     }
+}
+
+fn transform_world_clip(
+    tree: &ScrollTree,
+    parent_id: Option<ScrollTreeNodeId>,
+    clip_rect: LayoutRect,
+) -> (f32, f32, f32, f32) {
+    let parent_transform = parent_id
+        .map(|pid| tree.cumulative_node_to_root_transform(pid))
+        .unwrap_or_default();
+    let p_min = parent_transform
+        .transform_point2d(clip_rect.min)
+        .unwrap_or(clip_rect.min);
+    let p_max = parent_transform
+        .transform_point2d(clip_rect.max)
+        .unwrap_or(clip_rect.max);
+    let min_x = p_min.x.min(p_max.x);
+    let min_y = p_min.y.min(p_max.y);
+    let max_x = p_min.x.max(p_max.x);
+    let max_y = p_min.y.max(p_max.y);
+    (min_x, min_y, max_x, max_y)
 }
 
 /// A flat per-scroll-frame metrics snapshot, used by embedders that render their
