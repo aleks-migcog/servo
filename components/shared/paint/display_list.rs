@@ -807,6 +807,12 @@ impl ScrollTree {
             // node's clip_rect lives in its parent's coordinate space, so we
             // run it through the parent's cumulative `node_to_root_transform`.
             let world_clip = transform_world_clip(self, node.parent, info.clip_rect);
+            // Preserve the natural (unclipped) viewport for thumb math (see
+            // `ScrollFrameMetrics.natural_viewport_*`).
+            let natural_min_x = world_clip.0;
+            let natural_min_y = world_clip.1;
+            let natural_max_x = world_clip.2;
+            let natural_max_y = world_clip.3;
             let mut world_min_x = world_clip.0;
             let mut world_min_y = world_clip.1;
             let mut world_max_x = world_clip.2;
@@ -857,6 +863,10 @@ impl ScrollTree {
                 viewport_y: world_min_y * device_scale,
                 viewport_w: (world_max_x - world_min_x) * device_scale,
                 viewport_h: (world_max_y - world_min_y) * device_scale,
+                natural_viewport_x: natural_min_x * device_scale,
+                natural_viewport_y: natural_min_y * device_scale,
+                natural_viewport_w: (natural_max_x - natural_min_x) * device_scale,
+                natural_viewport_h: (natural_max_y - natural_min_y) * device_scale,
                 content_w: info.content_rect.width() * device_scale,
                 content_h: info.content_rect.height() * device_scale,
                 offset_x: info.offset.x * device_scale,
@@ -919,12 +929,25 @@ pub struct ScrollFrameMetrics {
     pub external_id_u64: u64,
     pub pipeline_namespace: u32,
     pub pipeline_index: u32,
-    /// Viewport (clip rect) in device pixels, transformed to the root frame's
-    /// coordinate system via the parent's cumulative transform.
+    /// Visible viewport rect in device pixels, transformed through the
+    /// parent's cumulative transform AND intersected with every ancestor
+    /// `Scroll` node's clip rect. This is the rect the embedder should
+    /// CLIP its rendered scrollbar to (e.g. via Unity `RectMask2D`).
     pub viewport_x: f32,
     pub viewport_y: f32,
     pub viewport_w: f32,
     pub viewport_h: f32,
+    /// Natural (unclipped) viewport rect of this scroll frame in device
+    /// pixels - the scroll node's own clip_rect transformed to root
+    /// coordinates, WITHOUT ancestor intersection. Used by the embedder
+    /// for thumb-size / travel math so the thumb keeps a stable size and
+    /// scroll feel even when an outer scroller covers part of the inner
+    /// (Chromium parity: thumb ratio uses the inner's natural scrollport,
+    /// then the rendered thumb is clipped like any other content).
+    pub natural_viewport_x: f32,
+    pub natural_viewport_y: f32,
+    pub natural_viewport_w: f32,
+    pub natural_viewport_h: f32,
     /// Total scrollable content size in device pixels.
     pub content_w: f32,
     pub content_h: f32,
