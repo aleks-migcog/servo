@@ -358,6 +358,12 @@ lto = "thin"
 codegen-units = 1
 
 [patch.crates-io]
+# Local taffy fork carrying the grid percentage-size fix from
+# aleks-migcog/taffy@fix/grid-percentage-track-sizing. Lift this once the fix
+# lands in a published taffy release. See
+# /Users/developer/Projects6/servo-unity-6/docs/work/ISSUE_1_0426.md.
+taffy = { path = "/Users/developer/Projects4/taffy" }
+
 # If you need to temporarily test Servo with a local fork of some upstream
 # crate, add that here. Use the form:
 #

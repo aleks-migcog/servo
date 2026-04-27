@@ -442,11 +442,22 @@ impl ComputedValuesExt for ComputedValues {
     ) -> LogicalVec2<Size<Au>> {
         match self.get_position().box_sizing {
             BoxSizing::ContentBox => box_size,
-            // These may be negative, but will later be clamped by `min-width`/`min-height`
-            // which is clamped to zero.
+            // CSS used dimensions are non-negative (CSS 2.1 §10.3 / Box Model
+            // §box-sizing): when `box-sizing: border-box` would mathematically
+            // demand a content size below zero (e.g. `width: 0; height: 0;
+            // border: 30px solid`), the used border-box height must instead
+            // be `padding + border`, i.e. the content size is clamped to
+            // zero. Matches the clamp already applied by
+            // content_min_box_size_for_min_size below.
+            //
+            // Repro: /Users/developer/Projects6/servo-unity-6/docs/work/ISSUE_2_0426.md
+            // (CSS-triangle border-hack inside a universal box-sizing rule).
+            // Without this clamp, flex-item / block-item participation uses
+            // a negative content size and the visible border-box collapses,
+            // both invisibly to paint and to layout positioning of siblings.
             BoxSizing::BorderBox => box_size.map_inline_and_block_sizes(
-                |value| value - pbm.padding_border_sums.inline,
-                |value| value - pbm.padding_border_sums.block,
+                |value| Au::zero().max(value - pbm.padding_border_sums.inline),
+                |value| Au::zero().max(value - pbm.padding_border_sums.block),
             ),
         }
     }
