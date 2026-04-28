@@ -631,10 +631,30 @@ impl HoistedAbsolutelyPositionedBox {
             self.original_parent_writing_mode,
             containing_block_writing_mode,
         );
+        // ISSUE_9: `inline_origin` and `block_origin` are computed
+        // relative to the containing block's PADDING box (the abspos CB
+        // is the padding box of the nearest positioned ancestor). The
+        // resulting fragment is later stored in the parent fragment's
+        // `children` list and translated during scrollable overflow
+        // propagation by the parent's CONTENT origin
+        // (see `BoxFragment::calculate_scrollable_overflow`,
+        // `box_fragment.rs:272-317`). That over-translates by
+        // `containing_block_padding.{inline_start, block_start}` and
+        // can push abspos descendants past the padding-rect edge of
+        // every ancestor scroll container, manifesting as a phantom
+        // scrollbar (e.g. nested .list-container with absolute
+        // `right: Npx` inside a `padding > 0` row). Subtract the CB
+        // padding here so the stored origin is relative to the CB's
+        // CONTENT box, matching what the overflow code expects.
+        let cb_padding = containing_block_padding.to_logical(containing_block_writing_mode);
         let content_rect = LogicalRect {
             start_corner: LogicalVec2 {
-                inline: inline_origin + margin.inline_start + pb.inline_start,
-                block: block_origin + margin.block_start + pb.block_start,
+                inline: inline_origin - cb_padding.inline_start
+                    + margin.inline_start
+                    + pb.inline_start,
+                block: block_origin - cb_padding.block_start
+                    + margin.block_start
+                    + pb.block_start,
             },
             size: content_size,
         }

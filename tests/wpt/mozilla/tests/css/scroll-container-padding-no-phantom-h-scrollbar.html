@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<title>Scroll containers with padding-right do not produce a phantom horizontal scrollable overflow</title>
+<link rel="help" href="https://drafts.csswg.org/css-overflow-3/#scrollable">
+<link rel="match" href="https://github.com/aleksmigcog/servo-unity-6/blob/main/docs/work/QUESTION_FOR_TEAM_ISSUE_9_HORIZONTAL_OVERFLOW.md">
+<meta name="assert" content="A flex column scroll container with overflow-y:auto, padding-right:N, whose children exactly fit the inline content box, must NOT report scrollWidth > clientWidth (no phantom horizontal overflow). The same must hold for nested scroll containers that share the same padding-right invariant - regression test for ISSUE_9, originating from box_fragment.rs::calculate_scrollable_overflow inflating the X axis by full padding.right whenever overflow_max.x > padding_max.x is true even by a sub-pixel.">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  body { margin: 0; }
+  .container {
+    width: 400px;
+    height: 200px;
+    box-sizing: border-box;
+    padding-right: 10px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border: 1px solid #ccc;
+  }
+  .container.nested-inner {
+    width: auto;
+    height: auto;
+    flex: 1;
+    border: none;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px;
+    background: #eee;
+    box-sizing: border-box;
+  }
+  .fixed { width: 150px; height: 8px; background: #d1b51f; }
+  .label { font: 14px sans-serif; }
+</style>
+<body>
+  <div id="log"></div>
+
+  <!-- Case A: single scroll container, plenty of vertical content,
+       inline content fits the padding box exactly. scrollWidth must
+       equal clientWidth. -->
+  <div class="container" id="single">
+    <div class="row"><span class="label">Alpha</span><div class="fixed"></div></div>
+    <div class="row"><span class="label">Beta</span><div class="fixed"></div></div>
+    <div class="row"><span class="label">Gamma</span><div class="fixed"></div></div>
+    <div class="row"><span class="label">Delta</span><div class="fixed"></div></div>
+    <div class="row"><span class="label">Epsilon</span><div class="fixed"></div></div>
+    <div class="row"><span class="label">Zeta</span><div class="fixed"></div></div>
+    <div class="row"><span class="label">Eta</span><div class="fixed"></div></div>
+  </div>
+
+  <!-- Case B: nested scroll containers, both with padding-right:10px.
+       This mirrors the Adv150_Diffing structure where #root-ui already
+       has class list-container and BuildApp() mounts another
+       div.list-container into it. Neither container should expose a
+       horizontal scrollbar because no descendant overflows the padding
+       box on the inline axis. -->
+  <div class="container" id="outer">
+    <div class="container nested-inner" id="inner">
+      <div class="row"><span class="label">Alpha</span><div class="fixed"></div></div>
+      <div class="row"><span class="label">Beta</span><div class="fixed"></div></div>
+      <div class="row"><span class="label">Gamma</span><div class="fixed"></div></div>
+      <div class="row"><span class="label">Delta</span><div class="fixed"></div></div>
+      <div class="row"><span class="label">Epsilon</span><div class="fixed"></div></div>
+      <div class="row"><span class="label">Zeta</span><div class="fixed"></div></div>
+      <div class="row"><span class="label">Eta</span><div class="fixed"></div></div>
+    </div>
+  </div>
+
+<script>
+  function expectNoHorizontalOverflow(id, label) {
+    test(() => {
+      const el = document.getElementById(id);
+      assert_equals(
+        el.scrollWidth, el.clientWidth,
+        label + ": scrollWidth (" + el.scrollWidth +
+        ") must equal clientWidth (" + el.clientWidth + ")"
+      );
+    }, label);
+  }
+
+  expectNoHorizontalOverflow(
+    "single",
+    "single scroll container with padding-right:10px and overflow-y:auto"
+  );
+  expectNoHorizontalOverflow(
+    "outer",
+    "nested - outer scroll container with padding-right:10px"
+  );
+  expectNoHorizontalOverflow(
+    "inner",
+    "nested - inner scroll container with padding-right:10px"
+  );
+</script>
+</body>
