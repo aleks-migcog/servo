@@ -30,6 +30,7 @@ fn add_mock_scroll_node(tree: &mut ScrollTree) -> (ScrollTreeNodeId, ExternalScr
             external_id,
             content_rect: Size2D::new(200.0, 200.0).into(),
             clip_rect: Size2D::new(100.0, 100.0).into(),
+            scrollable_size: Size2D::new(100.0, 100.0),
             scroll_sensitivity: AxesScrollSensitivity {
                 x: ScrollType::Script | ScrollType::InputEvents,
                 y: ScrollType::Script | ScrollType::InputEvents,
@@ -97,6 +98,7 @@ fn test_scroll_tree_simple_scroll_chaining() {
             external_id: unscrollable_external_id,
             content_rect: Size2D::new(100.0, 100.0).into(),
             clip_rect: Size2D::new(100.0, 100.0).into(),
+            scrollable_size: Size2D::zero(),
             scroll_sensitivity: AxesScrollSensitivity {
                 x: ScrollType::Script | ScrollType::InputEvents,
                 y: ScrollType::Script | ScrollType::InputEvents,

@@ -187,6 +187,14 @@ pub struct ScrollableNodeInfo {
     /// The clip rectange for this scroll node.
     pub clip_rect: LayoutRect,
 
+    /// Maximum scrollable extent of this node, precomputed from layout-unit (`Au`)
+    /// arithmetic so it does not suffer from the Box2D-derived precision loss
+    /// you would get from `content_rect.size() - clip_rect.size()` when either
+    /// rect has a non-zero, non-power-of-two origin (ISSUE_10 - phantom V
+    /// scrollbar caused by `218.0 - 217.99998 = 1.5e-5 > 0.0`).
+    /// Components are clamped to `>= 0`.
+    pub scrollable_size: LayoutSize,
+
     /// Whether this `ScrollableNode` is sensitive to input events.
     pub scroll_sensitivity: AxesScrollSensitivity,
 
@@ -270,8 +278,10 @@ impl ScrollableNodeInfo {
 }
 
 impl ScrollableNodeInfo {
+    /// Returns the precomputed scrollable extent. See the field docs for why
+    /// this MUST NOT be computed from `content_rect.size() - clip_rect.size()`.
     fn scrollable_size(&self) -> LayoutSize {
-        self.content_rect.size() - self.clip_rect.size()
+        self.scrollable_size
     }
 }
 
@@ -1086,15 +1096,18 @@ impl PaintDisplayListInfo {
                 kind: ReferenceFrameKind::default(),
             }),
         );
+        let viewport_size = viewport_details.layout_size();
+        let root_scrollable_size = LayoutSize::new(
+            (content_size.width - viewport_size.width).max(0.0),
+            (content_size.height - viewport_size.height).max(0.0),
+        );
         let root_scroll_node_id = scroll_tree.add_scroll_tree_node(
             Some(root_reference_frame_id),
             SpatialTreeNodeInfo::Scroll(ScrollableNodeInfo {
                 external_id: ExternalScrollId(0, pipeline_id),
                 content_rect: LayoutRect::from_origin_and_size(LayoutPoint::zero(), content_size),
-                clip_rect: LayoutRect::from_origin_and_size(
-                    LayoutPoint::zero(),
-                    viewport_details.layout_size(),
-                ),
+                clip_rect: LayoutRect::from_origin_and_size(LayoutPoint::zero(), viewport_size),
+                scrollable_size: root_scrollable_size,
                 scroll_sensitivity: viewport_scroll_sensitivity,
                 offset: LayoutVector2D::zero(),
                 offset_changed: Cell::new(false),

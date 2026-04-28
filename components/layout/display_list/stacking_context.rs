@@ -228,6 +228,7 @@ impl StackingContextTree {
         external_id: wr::ExternalScrollId,
         content_rect: LayoutRect,
         clip_rect: LayoutRect,
+        scrollable_size: LayoutSize,
         scroll_sensitivity: AxesScrollSensitivity,
     ) -> ScrollTreeNodeId {
         self.paint_info.scroll_tree.add_scroll_tree_node(
@@ -236,6 +237,7 @@ impl StackingContextTree {
                 external_id,
                 content_rect,
                 clip_rect,
+                scrollable_size,
                 scroll_sensitivity,
                 offset: LayoutVector2D::zero(),
                 offset_changed: Cell::new(false),
@@ -1585,11 +1587,31 @@ impl BoxFragment {
             y: overflow.y.into(),
         };
 
+        // ISSUE_10: compute scrollable_size in Au, not from f32 LayoutRect
+        // sizes. `LayoutRect` is `Box2D<f32>` (origin-style: `min`/`max`),
+        // so `.size()` returns `max - min`. When `clip_rect` was translated by
+        // `containing_block_rect.origin` and the resulting origin is not a
+        // power-of-two-friendly f32 (e.g. 25.8 px), `max - min` loses ~1e-5 px
+        // and `content_rect.size() - clip_rect.size()` ends up positive even
+        // when both rects have identical Au heights. Au integer subtraction
+        // gives an exact answer.
+        let scrollable_overflow_au = self.scrollable_overflow();
+        let padding_rect_au = self.padding_rect();
+        let scrollable_size = LayoutSize::new(
+            (scrollable_overflow_au.size.width - padding_rect_au.size.width)
+                .max(Au::zero())
+                .to_f32_px(),
+            (scrollable_overflow_au.size.height - padding_rect_au.size.height)
+                .max(Au::zero())
+                .to_f32_px(),
+        );
+
         let scroll_tree_node_id = stacking_context_tree.define_scroll_frame(
             parent_scroll_node_id,
             external_scroll_id,
-            self.scrollable_overflow().to_webrender(),
+            scrollable_overflow_au.to_webrender(),
             scroll_frame_rect,
+            scrollable_size,
             sensitivity,
         );
 
