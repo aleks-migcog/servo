@@ -101,6 +101,9 @@ pub(crate) struct WheelLatch {
 /// Chromium's `kDefaultMouseWheelLatchingTransaction` (500ms) used as the
 /// synthetic gesture-end timeout on systems without OS scroll-phase events.
 /// See `content/browser/renderer_host/input/mouse_wheel_phase_handler.h`.
+/// Note: the timer is only refreshed on *effective* scrolls (offset moved);
+/// at-bound wheel events do not extend the latch, so a saturated inner
+/// scroller releases to its outer ancestor after 500ms of pin-against-bound.
 pub(crate) const WHEEL_LATCH_IDLE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(500);
 
@@ -480,7 +483,7 @@ impl WebViewRenderer {
         // when the pointer moves more than `WHEEL_LATCH_SLOP_PX` from the
         // gesture's anchor, mirroring Chromium's `kWheelLatchingSlopRegion`
         // (`mouse_wheel_phase_handler.h`). Without this, a brief pause
-        // shorter than the 500ms idle timeout traps the user inside the
+        // shorter than the idle timeout traps the user inside the
         // saturated inner scroller; "moving the cursor" is the canonical
         // escape hatch the operator was relying on.
         if let InputEvent::MouseMove(ref mouse_move_event) = event_and_id.event {
@@ -984,13 +987,18 @@ impl WebViewRenderer {
                             scroll_location,
                             ScrollType::InputEvents,
                         );
-                        // Bump the latch timestamp on every wheel event of the
-                        // gesture (movement OR at-bound), so a long pin-against
-                        // -bound hold doesn't expire mid-gesture.
-                        if let Some(existing) = self.wheel_latch.as_mut() {
-                            existing.last_event_time = now;
-                        }
+                        // Only bump the latch timestamp when the wheel event
+                        // actually moved the latched node. `scroll_node_exact`
+                        // returns `Some` iff the offset changed, `None` at-bound.
+                        // Treating at-bound events as "idle" lets the latch
+                        // expire after `WHEEL_LATCH_IDLE_TIMEOUT` of pin-against
+                        // -bound holding, so the next wheel event escapes the
+                        // saturated inner via the unlatched ancestor walk below
+                        // and promotes to the outer scroller.
                         if let Some((external_scroll_id, offset)) = scroll_result {
+                            if let Some(existing) = self.wheel_latch.as_mut() {
+                                existing.last_event_time = now;
+                            }
                             // Reuse the first hit-test result for routing; the
                             // pipeline_id is what matters for downstream code.
                             let hit_test_result = hit_test_results
