@@ -777,7 +777,9 @@ fn layout_block_level_children_in_parallel(
     child_boxes
         .par_iter()
         .map(|child_box| {
-            let mut child_positioning_context = PositioningContext::default();
+            // ISSUE_11: inherit `skip_abspos_layout` so intrinsic-sizing
+            // probes don't accidentally lay out abspos descendants here.
+            let mut child_positioning_context = positioning_context.fresh_child();
             let fragment = child_box.borrow().layout(
                 layout_context,
                 &mut child_positioning_context,

@@ -2399,7 +2399,8 @@ impl IndependentFormattingContext {
         bidi_level: Level,
     ) {
         // We need to know the inline size of the atomic before deciding whether to do the line break.
-        let mut child_positioning_context = PositioningContext::default();
+        // ISSUE_11: inherit `skip_abspos_layout` from the active context.
+        let mut child_positioning_context = layout.positioning_context.fresh_child();
         let IndependentFloatOrAtomicLayoutResult {
             mut fragment,
             baselines,

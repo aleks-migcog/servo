@@ -296,13 +296,37 @@ impl BoxFragment {
         // overflow together, but from the specification it seems that if the border
         // box of an item is in the "wholly unreachable scrollable overflow region", but
         // its scrollable overflow is not, it should also be excluded.
+        // ISSUE_9 / ISSUE_11: abspos children's stored content_rect is
+        // padding-box-relative (matches the paint path's expectation -
+        // see `display_list/stacking_context.rs:1361-1372`). Translate
+        // them by the parent's PADDING origin instead of the content
+        // origin, otherwise we double-count `padding.{left,top}` and
+        // either produce a phantom scrollbar (ISSUE_9) or paint abspos
+        // descendants outside the parent's padding box (ISSUE_11).
+        let padding_origin = physical_padding_rect.origin.to_vector();
         let mut scrollable_overflow = self
             .children
             .iter()
             .fold(physical_padding_rect, |acc, child| {
+                let child_origin = match child {
+                    Fragment::Box(box_frag) => {
+                        if box_frag
+                            .borrow()
+                            .style()
+                            .get_box()
+                            .position
+                            .is_absolutely_positioned()
+                        {
+                            padding_origin
+                        } else {
+                            content_origin
+                        }
+                    },
+                    _ => content_origin,
+                };
                 let scrollable_overflow_from_child = child
                     .calculate_scrollable_overflow_for_parent()
-                    .translate(content_origin);
+                    .translate(child_origin);
 
                 // Note that this doesn't just exclude scrollable overflow outside the
                 // wholly unrechable scrollable overflow area, but also clips it. This

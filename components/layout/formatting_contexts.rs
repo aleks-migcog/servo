@@ -477,7 +477,11 @@ impl IndependentFormattingContext {
             );
         }
 
-        let mut child_positioning_context = PositioningContext::default();
+        // ISSUE_11: propagate the skip-abspos-layout flag from the parent
+        // context, so an intrinsic-sizing probe doesn't accidentally lay
+        // out abspos descendants here against a still-zero parent inline
+        // size.
+        let mut child_positioning_context = positioning_context.fresh_child();
         let result = self.layout_without_caching(
             layout_context,
             &mut child_positioning_context,
@@ -487,14 +491,21 @@ impl IndependentFormattingContext {
             lazy_block_size,
         );
 
-        *self.base.cached_layout_result.borrow_mut() =
-            Some(LayoutResultAndInputs::IndependentFormattingContext(
-                Box::new(IndependentFormattingContextLayoutResultAndInputs {
-                    result: result.clone(),
-                    positioning_context: child_positioning_context.clone(),
-                    containing_block_for_children_size: containing_block_for_children.size.clone(),
-                }),
-            ));
+        // ISSUE_11: do NOT cache results produced during an
+        // intrinsic-sizing probe. The probe layout deferred abspos
+        // descendants (`skip_abspos_layout = true`); reusing this
+        // cache from a real-layout pass would skip abspos layout
+        // entirely and leave the badge fragments un-laid-out.
+        if !positioning_context.skip_abspos_layout() {
+            *self.base.cached_layout_result.borrow_mut() =
+                Some(LayoutResultAndInputs::IndependentFormattingContext(
+                    Box::new(IndependentFormattingContextLayoutResultAndInputs {
+                        result: result.clone(),
+                        positioning_context: child_positioning_context.clone(),
+                        containing_block_for_children_size: containing_block_for_children.size.clone(),
+                    }),
+                ));
+        }
         positioning_context.append(child_positioning_context);
 
         (result, false)

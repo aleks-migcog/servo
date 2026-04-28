@@ -1761,7 +1761,17 @@ impl FlexItem<'_> {
         let containing_block = flex_context.containing_block;
         let independent_formatting_context = &self.box_.independent_formatting_context;
         let is_table = independent_formatting_context.is_table();
-        let mut positioning_context = PositioningContext::default();
+        // ISSUE_11: when `used_cross_size_override` is None this is the
+        // hypothetical-cross-size pass (intrinsic-sizing probe) - the
+        // final cross size hasn't been resolved yet so the item's
+        // containing block may be sized to 0. Defer abspos descendants
+        // until the final layout pass so we don't pollute the shared
+        // hoisted-fragment cache with 0-width-CB abspos fragments.
+        let mut positioning_context = if used_cross_size_override.is_some() {
+            PositioningContext::default()
+        } else {
+            PositioningContext::for_intrinsic_sizing()
+        };
         let item_writing_mode = independent_formatting_context.style().writing_mode;
         let item_is_horizontal = item_writing_mode.is_horizontal();
         let flex_axis = flex_context.config.flex_axis;
@@ -2548,7 +2558,15 @@ impl FlexItemBox {
         intrinsic_sizing_mode: IntrinsicSizingMode,
     ) -> Au {
         let content_block_size = || {
-            let mut positioning_context = PositioningContext::default();
+            // ISSUE_11: this is an intrinsic-sizing probe (we're computing
+            // the item's content block size before flex cross-axis stretch
+            // has produced a final inline size). Out-of-flow descendants
+            // do not contribute to flex sizing, and laying them out here
+            // publishes stale `HoistedSharedFragment` geometry against a
+            // 0-inline parent which then survives into the real layout
+            // tree. Use `for_intrinsic_sizing` so abspos collection still
+            // works but `layout_collected_children` is a no-op.
+            let mut positioning_context = PositioningContext::for_intrinsic_sizing();
             let style = self.independent_formatting_context.style();
 
             // We are computing the intrinsic block size, so the tentative block size that we use

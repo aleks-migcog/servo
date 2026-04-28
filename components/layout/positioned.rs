@@ -109,9 +109,47 @@ impl AbsolutelyPositionedBox {
 #[derive(Clone, Default, MallocSizeOf)]
 pub(crate) struct PositioningContext {
     absolutes: Vec<HoistedAbsolutelyPositionedBox>,
+    /// ISSUE_11: when true, abspos descendants must NOT be laid out by
+    /// `layout_collected_children`. They're still collected via `push()`
+    /// so the caller can later transfer them to a real-layout context.
+    /// This is used during intrinsic-sizing probes (e.g. flexbox's
+    /// pre-stretch measurement pass) where the parent fragment hasn't
+    /// resolved its final size yet -- laying out abspos against a
+    /// 0-width parent pollutes the shared abspos fragment cache and
+    /// produces wrong layouts in the final tree.
+    skip_abspos_layout: bool,
 }
 
 impl PositioningContext {
+    /// Create a [`PositioningContext`] for an intrinsic-sizing probe pass.
+    /// Abspos descendants collected on this context will be deferred (their
+    /// `layout_collected_children` is a no-op). The caller is responsible for
+    /// transferring collected boxes to a normal context for the real layout.
+    pub(crate) fn for_intrinsic_sizing() -> Self {
+        Self {
+            absolutes: Vec::new(),
+            skip_abspos_layout: true,
+        }
+    }
+
+    /// Build a fresh empty [`PositioningContext`] that inherits the
+    /// `skip_abspos_layout` discipline of `self`. Used when a layout step
+    /// needs a temporary nested context (e.g. for caching or sub-layouts).
+    pub(crate) fn fresh_child(&self) -> Self {
+        Self {
+            absolutes: Vec::new(),
+            skip_abspos_layout: self.skip_abspos_layout,
+        }
+    }
+
+    /// True if this context is for an intrinsic-sizing probe and should
+    /// not lay out (or cache) abspos descendants. See
+    /// [`PositioningContext::for_intrinsic_sizing`].
+    #[inline]
+    pub(crate) fn skip_abspos_layout(&self) -> bool {
+        self.skip_abspos_layout
+    }
+
     #[inline]
     pub(crate) fn new_for_layout_box_base(layout_box_base: &LayoutBoxBase) -> Option<Self> {
         Self::new_for_style_and_fragment_flags(
@@ -190,7 +228,10 @@ impl PositioningContext {
             return fragment_layout_fn(self);
         }
 
-        let mut new_context = PositioningContext::default();
+        let mut new_context = PositioningContext {
+            absolutes: Vec::new(),
+            skip_abspos_layout: self.skip_abspos_layout,
+        };
         let mut new_fragment = fragment_layout_fn(&mut new_context);
 
         // Lay out all of the absolutely positioned children for this fragment, and, if it
@@ -251,7 +292,7 @@ impl PositioningContext {
         layout_context: &LayoutContext,
         new_fragment: &mut BoxFragment,
     ) {
-        if self.absolutes.is_empty() {
+        if self.absolutes.is_empty() || self.skip_abspos_layout {
             return;
         }
 
@@ -631,30 +672,25 @@ impl HoistedAbsolutelyPositionedBox {
             self.original_parent_writing_mode,
             containing_block_writing_mode,
         );
-        // ISSUE_9: `inline_origin` and `block_origin` are computed
-        // relative to the containing block's PADDING box (the abspos CB
-        // is the padding box of the nearest positioned ancestor). The
-        // resulting fragment is later stored in the parent fragment's
-        // `children` list and translated during scrollable overflow
-        // propagation by the parent's CONTENT origin
-        // (see `BoxFragment::calculate_scrollable_overflow`,
-        // `box_fragment.rs:272-317`). That over-translates by
-        // `containing_block_padding.{inline_start, block_start}` and
-        // can push abspos descendants past the padding-rect edge of
-        // every ancestor scroll container, manifesting as a phantom
-        // scrollbar (e.g. nested .list-container with absolute
-        // `right: Npx` inside a `padding > 0` row). Subtract the CB
-        // padding here so the stored origin is relative to the CB's
-        // CONTENT box, matching what the overflow code expects.
-        let cb_padding = containing_block_padding.to_logical(containing_block_writing_mode);
+        // ISSUE_9 / ISSUE_11: `inline_origin` and `block_origin` are
+        // computed relative to the containing block's PADDING box (the
+        // abspos CB is the padding box of the nearest positioned
+        // ancestor). The display list / stacking-context paint path
+        // also expects abspos fragment coordinates to be padding-box-
+        // relative (see
+        // `display_list/stacking_context.rs:1361-1372` and `:1565-1575`).
+        // Earlier the origin was shifted to CONTENT-box-relative to
+        // appease `BoxFragment::calculate_scrollable_overflow`, but
+        // that broke painting under scroll containers (text rendered
+        // above the row). The correct fix lives in overflow
+        // propagation: see `box_fragment.rs:272-317` where abspos
+        // children must be translated by the parent's PADDING origin,
+        // not its content origin. Keep the stored origin padding-CB-
+        // relative here.
         let content_rect = LogicalRect {
             start_corner: LogicalVec2 {
-                inline: inline_origin - cb_padding.inline_start
-                    + margin.inline_start
-                    + pb.inline_start,
-                block: block_origin - cb_padding.block_start
-                    + margin.block_start
-                    + pb.block_start,
+                inline: inline_origin + margin.inline_start + pb.inline_start,
+                block: block_origin + margin.block_start + pb.block_start,
             },
             size: content_size,
         }
