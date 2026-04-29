@@ -88,6 +88,14 @@ impl App {
             "resource",
             protocols::resource::ResourceProtocolHandler::default(),
         );
+        // Spike 7 smoke: throwaway `unity://` handler that always returns
+        // 503. Lets us prove scheme registration + routing in servoshell
+        // without rebuilding the FFI dylib. Production handler lives in
+        // /Users/developer/Projects4/servo-unity/src/ServoUnityFFI.
+        let _ = protocol_registry.register(
+            "unity",
+            protocols::unity_smoke::UnitySmokeProtocolHandler::default(),
+        );
 
         let servo_builder = ServoBuilder::default()
             .opts(self.opts.clone())

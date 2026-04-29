@@ -4,4 +4,5 @@
 
 pub(crate) mod resource;
 pub(crate) mod servo;
+pub(crate) mod unity_smoke;
 pub(crate) mod urlinfo;
