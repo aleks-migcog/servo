@@ -51,6 +51,29 @@ impl ImmutableOrigin {
             return Self::new_opaque_for_file();
         }
 
+        // Custom schemes registered by embedders that we want to expose as a
+        // tuple-origin (so localStorage / sessionStorage / cookies are usable
+        // from pages served through them). The whatwg URL spec leaves origin
+        // tupling to the implementation for non-special schemes; the upstream
+        // url crate returns Opaque, but for these schemes we synthesise a
+        // tuple so resources served from the same scheme+host are same-origin.
+        //
+        // Servo-Unity FFI uses `app://` as a virtual webroot for React
+        // production bundles (see /Users/developer/Projects4/servo-unity/src/
+        // ServoUnityFFI/src/unity_app.rs). Without this entry React's storage-
+        // accessor code throws SecurityError on every page load.
+        const CUSTOM_TUPLE_ORIGIN_SCHEMES: &[&str] = &["app"];
+        if CUSTOM_TUPLE_ORIGIN_SCHEMES.contains(&url.scheme()) {
+            let scheme = url.scheme().to_string();
+            // Empty host is normal for these schemes (e.g. `app:///index.html`
+            // parses with host=None). Use a stable placeholder so two
+            // host-less URLs end up same-origin.
+            let host_str = url.host_str().unwrap_or("_");
+            let host = Host::Domain(host_str.to_string());
+            let port = url.port().unwrap_or(0);
+            return ImmutableOrigin::Tuple(scheme, host, port);
+        }
+
         match url.origin() {
             Origin::Opaque(_) => ImmutableOrigin::new_opaque(),
             Origin::Tuple(scheme, host, port) => ImmutableOrigin::Tuple(scheme, host, port),
