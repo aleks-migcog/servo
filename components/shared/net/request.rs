@@ -385,6 +385,61 @@ impl RequestBody {
     pub fn len(&self) -> Option<usize> {
         self.total_bytes
     }
+
+    /// Synchronously drain every BodyChunkResponse chunk into a single
+    /// buffer. Intended for non-network protocol handlers (e.g. custom
+    /// `app://` schemes) that need the request body up front before
+    /// handing it off to a non-Servo consumer. Mirrors the
+    /// `Connect + Chunk` loop used by `obtain_response_setup_router_callback`
+    /// in `net/http_loader.rs`, but without the async router.
+    ///
+    /// Errors if the body stream sender has already been closed, if any
+    /// IPC send/recv fails, or if the script side reports
+    /// `BodyChunkResponse::Error`. Callers may invoke `close_stream()`
+    /// after a successful drain - the stream is logically terminated
+    /// once `Done` is observed.
+    pub fn drain_to_vec(&self) -> Result<Vec<u8>, String> {
+        if self.source_is_null() {
+            return Ok(Vec::new());
+        }
+        let stream_arc = self.clone_stream();
+        let (body_chan, body_port) = ipc::channel::<BodyChunkResponse>()
+            .map_err(|e| format!("drain_to_vec: ipc::channel failed: {e}"))?;
+        {
+            let mut lock = stream_arc.lock();
+            let Some(chunk_requester) = lock.as_mut() else {
+                return Err("drain_to_vec: body stream already closed".to_owned());
+            };
+            chunk_requester
+                .send(BodyChunkRequest::Connect(body_chan))
+                .map_err(|e| format!("drain_to_vec: send Connect failed: {e}"))?;
+        }
+        let mut buffer: Vec<u8> = Vec::new();
+        loop {
+            {
+                let mut lock = stream_arc.lock();
+                let Some(chunk_requester) = lock.as_mut() else {
+                    return Err("drain_to_vec: body stream closed mid-drain".to_owned());
+                };
+                chunk_requester
+                    .send(BodyChunkRequest::Chunk)
+                    .map_err(|e| format!("drain_to_vec: send Chunk failed: {e}"))?;
+            }
+            match body_port.recv() {
+                Ok(BodyChunkResponse::Chunk(bytes)) => {
+                    buffer.extend_from_slice(&bytes);
+                },
+                Ok(BodyChunkResponse::Done) => break,
+                Ok(BodyChunkResponse::Error) => {
+                    return Err("drain_to_vec: stream error from script".to_owned());
+                },
+                Err(e) => {
+                    return Err(format!("drain_to_vec: recv failed: {e}"));
+                },
+            }
+        }
+        Ok(buffer)
+    }
 }
 
 trait RequestBodySize {
