@@ -363,12 +363,20 @@ impl RangeInputShadowTree {
 
         self.slider_thumb.set_string_attribute(
             &local_name!("style"),
-            format!("inset-inline-start: {percent}% !important;").into(),
+            format!(
+                "inset-inline-start: {percent}% !important; \
+                 transform: translate(-{percent}%, -50%) !important;"
+            )
+            .into(),
             CanGc::from_cx(cx),
         );
         self.slider_fill.set_string_attribute(
             &local_name!("style"),
-            format!("width: {percent}% !important;").into(),
+            format!(
+                "width: calc({percent}% - {fraction} * 16px + 8px) !important;",
+                fraction = percent / 100.0
+            )
+            .into(),
             CanGc::from_cx(cx),
         );
     }
