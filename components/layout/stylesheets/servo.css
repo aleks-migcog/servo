@@ -245,18 +245,19 @@ input[type="range"]::slider-thumb {
      transitioning the whole transform also animates per-value position
      changes, producing a visible "correction slide" after each click. */
   transform: translate(var(--su-thumb-shift, 0%), -50%);
+  transform-origin: 50% 50%;
   scale: 1;
   transition: scale 0.12s ease, background-color 0.12s ease;
 }
 
 input[type="range"]::slider-thumb:hover {
   background: #007aff;
-  scale: 1.2;
+  transform: translate(var(--su-thumb-shift, 0%), -50%) scale(1.2);
 }
 
 input[type="range"]::slider-thumb:active {
   background: #005ecb;
-  scale: 1.2;
+  transform: translate(var(--su-thumb-shift, 0%), -50%) scale(1.2);
 }
 
 input[type="range"]:disabled::slider-fill,
