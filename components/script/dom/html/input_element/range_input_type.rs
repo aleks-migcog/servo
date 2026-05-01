@@ -7,19 +7,24 @@ use html5ever::{local_name, ns};
 use js::context::JSContext;
 use markup5ever::QualName;
 use script_bindings::codegen::GenericBindings::HTMLInputElementBinding::HTMLInputElementMethods;
+use script_bindings::codegen::GenericBindings::MouseEventBinding::MouseEventMethods;
 use script_bindings::domstring::parse_floating_point_number;
 use script_bindings::root::Dom;
 use script_bindings::script_runtime::CanGc;
 use style::selector_parser::PseudoElement;
+use stylo_atoms::atom;
 
 use crate::dom::bindings::cell::DomRefCell;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::element::{CustomElementCreationMode, Element, ElementCreator};
+use crate::dom::event::{Event, EventBubbles, EventCancelable, EventComposed};
+use crate::dom::eventtarget::EventTarget;
 use crate::dom::input_element::HTMLInputElement;
 use crate::dom::input_element::input_type::SpecificInputType;
 use crate::dom::node::{Node, NodeTraits};
+use crate::dom::types::MouseEvent;
 
 #[derive(Default, JSTraceable, MallocSizeOf, PartialEq)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
@@ -126,6 +131,91 @@ impl SpecificInputType for RangeInputType {
     fn update_shadow_tree(&self, cx: &mut JSContext, input: &HTMLInputElement) {
         self.get_or_create_shadow_tree(cx, input).update(cx, input)
     }
+
+    /// SLIDER_PLAN P4 - click-to-set on `<input type=range>`.
+    ///
+    /// Handles `mousedown` (primary button, no Cmd/Ctrl, not disabled) by
+    /// computing the value at the event point and dispatching `input` then
+    /// `change`. Subsequent `mousemove`/`mouseup` events are intentionally
+    /// swallowed (returns `true`) so the default text-input handler does
+    /// not see them. Drag state (P5), ESC cancel (P6) and touch parity (P7)
+    /// are scoped to follow-up patches per docs/work/SLIDER_PLAN.md.
+    fn handle_mouse_button_event(
+        &self,
+        input: &HTMLInputElement,
+        mouse_event: &MouseEvent,
+        can_gc: CanGc,
+    ) -> bool {
+        let event = mouse_event.upcast::<Event>();
+        let event_type = event.type_();
+
+        // Only act on mousedown for now; swallow other mouse events so the
+        // default text-input dispatch does not run for type=range.
+        if event_type != atom!("mousedown") {
+            return true;
+        }
+
+        // Primary button only, no Cmd/Ctrl modifier (Gecko convention).
+        if mouse_event.Button() != 0 || mouse_event.CtrlKey() || mouse_event.MetaKey() {
+            return true;
+        }
+
+        let element = input.upcast::<Element>();
+        if element.disabled_state() {
+            return true;
+        }
+
+        let Some(new_value) = compute_value_at_event_point(input, mouse_event) else {
+            return true;
+        };
+
+        // Set the value via the IDL setter so sanitization, step-snapping and
+        // the shadow-tree thumb position all stay in sync.
+        if input.SetValueAsNumber(new_value, can_gc).is_err() {
+            return true;
+        }
+
+        let target = input.upcast::<EventTarget>();
+        // Per HTML spec, fire `input` (composed, bubbling) then `change`.
+        target.fire_event_with_params(
+            atom!("input"),
+            EventBubbles::Bubbles,
+            EventCancelable::NotCancelable,
+            EventComposed::Composed,
+            can_gc,
+        );
+        target.fire_bubbling_event(atom!("change"), can_gc);
+        true
+    }
+}
+
+/// SLIDER_PLAN P3 - port of Gecko's `nsRangeFrame::GetValueAtEventPoint`,
+/// horizontal LTR only for now. Vertical and RTL layouts are followups.
+///
+/// Returns `None` when min/max are unset, the range is degenerate, or the
+/// element has no traversable width.
+fn compute_value_at_event_point(
+    input: &HTMLInputElement,
+    mouse_event: &MouseEvent,
+) -> Option<f64> {
+    let min = input.minimum()?;
+    let max = input.maximum()?;
+    if max <= min {
+        return Some(min);
+    }
+
+    let rect = input.upcast::<Element>().client_rect();
+    let width = rect.size.width as f64;
+    if width <= 0.0 {
+        return Some(min);
+    }
+
+    // Phase 1 simplification: skip thumb-center compensation. Click-to-set
+    // clamps to [min, max] across the input's full width. Thumb-center math
+    // (Gecko's pos_at_start/pos_at_end) lands together with drag in P5.
+    let p = (mouse_event.ClientX() - rect.origin.x) as f64;
+    let fraction = (p / width).clamp(0.0, 1.0);
+    Some(min + fraction * (max - min))
 }
 
 fn round_halves_positive(n: f64) -> f64 {

@@ -1972,8 +1972,20 @@ impl HTMLInputElement {
         }
     }
 
-    fn handle_mouse_event(&self, mouse_event: &MouseEvent) {
+    fn handle_mouse_event(&self, cx: &mut JSContext, mouse_event: &MouseEvent) {
         if mouse_event.upcast::<Event>().DefaultPrevented() {
+            return;
+        }
+
+        // Allow input-type-specific handlers (e.g. Range slider click-to-set)
+        // to consume mouse events before the default text-input handling.
+        // See SLIDER_PLAN.md / SCROLLBAR_PLAN.md.
+        let handled = self.input_type().as_specific().handle_mouse_button_event(
+            self,
+            mouse_event,
+            CanGc::from_cx(cx),
+        );
+        if handled {
             return;
         }
 
@@ -2277,7 +2289,7 @@ impl VirtualMethods for HTMLInputElement {
     /// <https://dom.spec.whatwg.org/#action-versus-occurance>
     fn handle_event(&self, cx: &mut js::context::JSContext, event: &Event) {
         if let Some(mouse_event) = event.downcast::<MouseEvent>() {
-            self.handle_mouse_event(mouse_event);
+            self.handle_mouse_event(cx, mouse_event);
             event.mark_as_handled();
         } else if event.type_() == atom!("keydown") &&
             !event.DefaultPrevented() &&

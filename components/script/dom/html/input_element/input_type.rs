@@ -361,4 +361,19 @@ pub(crate) trait SpecificInputType {
         _can_gc: CanGc,
     ) {
     }
+
+    /// Hook for input-type-specific mouse button event handling. Returning
+    /// `true` short-circuits the default text-input mouse handling, signalling
+    /// that this input type has consumed the event.
+    ///
+    /// Used by `<input type=range>` for click-to-set; future drag-state work
+    /// will extend this hook (see SLIDER_PLAN.md / SCROLLBAR_PLAN.md).
+    fn handle_mouse_button_event(
+        &self,
+        _input: &HTMLInputElement,
+        _mouse_event: &crate::dom::types::MouseEvent,
+        _can_gc: CanGc,
+    ) -> bool {
+        false
+    }
 }
