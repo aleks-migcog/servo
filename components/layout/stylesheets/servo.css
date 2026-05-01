@@ -237,23 +237,26 @@ input[type="range"]::slider-thumb {
   border-radius: 50%;
   background: #ffffff;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
-  transition: transform 0.12s ease, background-color 0.12s ease;
 
-  /* Inline-axis offset comes from --su-thumb-shift, set by
-     RangeInputShadowTree::update on each value change. translateY(-50%)
-     handles vertical centering. Composing both in one transform lets hover
-     / active simply append a scale() on the same property. */
+  /* Inline-axis offset is fed from RangeInputShadowTree::update via
+     `--su-thumb-shift` and applied here as a static (non-animated) transform.
+     The hover/active scale-up uses the standalone `scale` property so it
+     animates independently of the position-tracking translate - otherwise
+     transitioning the whole transform also animates per-value position
+     changes, producing a visible "correction slide" after each click. */
   transform: translate(var(--su-thumb-shift, 0%), -50%);
+  scale: 1;
+  transition: scale 0.12s ease, background-color 0.12s ease;
 }
 
 input[type="range"]::slider-thumb:hover {
   background: #007aff;
-  transform: translate(var(--su-thumb-shift, 0%), -50%) scale(1.2);
+  scale: 1.2;
 }
 
 input[type="range"]::slider-thumb:active {
   background: #005ecb;
-  transform: translate(var(--su-thumb-shift, 0%), -50%) scale(1.2);
+  scale: 1.2;
 }
 
 input[type="range"]:disabled::slider-fill,
