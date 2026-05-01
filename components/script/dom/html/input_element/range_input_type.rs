@@ -373,7 +373,7 @@ impl RangeInputShadowTree {
         self.slider_fill.set_string_attribute(
             &local_name!("style"),
             format!(
-                "width: calc({percent}% - {fraction} * 16px + 8px) !important;",
+                "width: calc({percent}% - {fraction} * 18px + 9px) !important;",
                 fraction = percent / 100.0
             )
             .into(),

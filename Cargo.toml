@@ -393,15 +393,19 @@ taffy = { path = "/Users/developer/Projects4/taffy" }
 #
 # Or for Stylo:
 #
-# [patch."https://github.com/servo/stylo"]
-# selectors = { path = "../stylo/selectors" }
-# servo_arc = { path = "../stylo/servo_arc" }
-# stylo = { path = "../stylo/style" }
-# stylo_atoms = { path = "../stylo/stylo_atoms" }
-# stylo_dom = { path = "../stylo/stylo_dom" }
-# stylo_malloc_size_of = { path = "../stylo/malloc_size_of" }
-# stylo_static_prefs = { path = "../stylo/stylo_static_prefs" }
-# stylo_traits = { path = "../stylo/style_traits" }
+# Local stylo fork at /Projects4/stylo (3 commits ahead of pinned rev,
+# all unrelated to slider/hover work). Uncommented to enable iterative
+# debugging of pseudo-element :hover invalidation - see
+# /Users/developer/Projects6/servo-unity-6/docs/work/HOVER_GEMINI_OPINION.md
+[patch."https://github.com/servo/stylo"]
+selectors = { path = "../stylo/selectors" }
+servo_arc = { path = "../stylo/servo_arc" }
+stylo = { path = "../stylo/style" }
+stylo_atoms = { path = "../stylo/stylo_atoms" }
+stylo_dom = { path = "../stylo/stylo_dom" }
+stylo_malloc_size_of = { path = "../stylo/malloc_size_of" }
+stylo_static_prefs = { path = "../stylo/stylo_static_prefs" }
+stylo_traits = { path = "../stylo/style_traits" }
 #
 # Or for another Git dependency:
 #
