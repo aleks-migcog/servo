@@ -165,7 +165,26 @@ impl SpecificInputType for RangeInputType {
             return true;
         }
 
-        let Some(new_value) = compute_value_at_event_point(input, mouse_event) else {
+        // Read the thumb width from the UA shadow tree so the math can
+        // apply Gecko-style thumb-center compensation; fall back to 0 if
+        // the shadow tree is not yet built (the click would have nothing
+        // to hit visually anyway).
+        //
+        // `Node::border_box()` gives us a viewport-relative border-box
+        // rect in `Au`, which is what we want for ClientX-relative math.
+        // (`Element::client_rect()` returns the IDL clientLeft/Top/Width
+        // tuple with origin always at the element's own border, not the
+        // viewport - that one is wrong for hit-test math.)
+        let thumb_width = self
+            .shadow_tree
+            .borrow()
+            .as_ref()
+            .and_then(|tree| tree.slider_thumb.upcast::<Node>().border_box())
+            .map(|rect| rect.size.width.to_f64_px())
+            .unwrap_or(0.0);
+
+        let Some(new_value) = compute_value_at_event_point(input, mouse_event, thumb_width)
+        else {
             return true;
         };
 
@@ -192,11 +211,18 @@ impl SpecificInputType for RangeInputType {
 /// SLIDER_PLAN P3 - port of Gecko's `nsRangeFrame::GetValueAtEventPoint`,
 /// horizontal LTR only for now. Vertical and RTL layouts are followups.
 ///
+/// Mirrors the thumb-center compensation from Gecko: the thumb's center
+/// is offset from the input's content edge by `thumb_width / 2`, so the
+/// reachable value range maps to `[thumb_width/2, width - thumb_width/2]`
+/// in element-local x. Clicks to the left of that band yield `min`,
+/// clicks to the right yield `max`.
+///
 /// Returns `None` when min/max are unset, the range is degenerate, or the
 /// element has no traversable width.
 fn compute_value_at_event_point(
     input: &HTMLInputElement,
     mouse_event: &MouseEvent,
+    thumb_width: f64,
 ) -> Option<f64> {
     let min = input.minimum()?;
     let max = input.maximum()?;
@@ -204,17 +230,25 @@ fn compute_value_at_event_point(
         return Some(min);
     }
 
-    let rect = input.upcast::<Element>().client_rect();
-    let width = rect.size.width as f64;
+    // Viewport-relative border-box of the input. ClientX is also in
+    // viewport CSS pixels, so subtraction yields element-local x.
+    let rect = input.upcast::<Node>().border_box()?;
+    let origin_x = rect.origin.x.to_f64_px();
+    let width = rect.size.width.to_f64_px();
     if width <= 0.0 {
         return Some(min);
     }
 
-    // Phase 1 simplification: skip thumb-center compensation. Click-to-set
-    // clamps to [min, max] across the input's full width. Thumb-center math
-    // (Gecko's pos_at_start/pos_at_end) lands together with drag in P5.
-    let p = (mouse_event.ClientX() - rect.origin.x) as f64;
-    let fraction = (p / width).clamp(0.0, 1.0);
+    let traversable = (width - thumb_width).max(0.0);
+    if traversable <= 0.0 {
+        return Some(min);
+    }
+
+    let pos_at_start = thumb_width / 2.0;
+    let pos_at_end = pos_at_start + traversable;
+    let p = mouse_event.ClientX() as f64 - origin_x;
+    let p_clamped = p.clamp(pos_at_start, pos_at_end);
+    let fraction = (p_clamped - pos_at_start) / traversable;
     Some(min + fraction * (max - min))
 }
 
