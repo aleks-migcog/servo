@@ -194,6 +194,21 @@ impl SpecificInputType for RangeInputType {
             return true;
         }
 
+        // Click-to-set teleports the thumb under the cursor, but
+        // Document::current_hover_target still points at whatever was hit
+        // when mousedown fired (typically the track/fill). Without nudging
+        // the shadow tree's hover state, ::slider-thumb:hover does not fire
+        // visually until the user moves the cursor a pixel. Force the thumb
+        // into hover state and clear it from the (now-stale) track/fill so
+        // the post-click visual matches the cursor position. Document's own
+        // hover-target tracking will reconcile naturally on the next
+        // mousemove.
+        if let Some(tree) = self.shadow_tree.borrow().as_ref() {
+            tree.slider_track.set_hover_state(false);
+            tree.slider_fill.set_hover_state(false);
+            tree.slider_thumb.set_hover_state(true);
+        }
+
         let target = input.upcast::<EventTarget>();
         // Per HTML spec, fire `input` (composed, bubbling) then `change`.
         target.fire_event_with_params(

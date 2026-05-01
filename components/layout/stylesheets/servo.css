@@ -248,12 +248,12 @@ input[type="range"]::slider-thumb {
 
 input[type="range"]::slider-thumb:hover {
   background: #007aff;
-  transform: translate(var(--su-thumb-shift, 0%), -50%) scale(1.1);
+  transform: translate(var(--su-thumb-shift, 0%), -50%) scale(1.2);
 }
 
 input[type="range"]::slider-thumb:active {
   background: #005ecb;
-  transform: translate(var(--su-thumb-shift, 0%), -50%) scale(1.1);
+  transform: translate(var(--su-thumb-shift, 0%), -50%) scale(1.2);
 }
 
 input[type="range"]:disabled::slider-fill,
