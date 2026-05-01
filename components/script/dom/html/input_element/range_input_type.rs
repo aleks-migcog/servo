@@ -361,11 +361,14 @@ impl RangeInputShadowTree {
             (clamped_value - min) / (max - min) * 100.0
         };
 
+        // The dynamic inline-axis offset is fed to the UA stylesheet via a
+        // custom property so the hover/active rules can extend `transform`
+        // (e.g. `scale(1.1)`) without losing the per-value translateX.
         self.slider_thumb.set_string_attribute(
             &local_name!("style"),
             format!(
-                "inset-inline-start: {percent}% !important; \
-                 transform: translate(-{percent}%, -50%) !important;"
+                "--su-thumb-shift: -{percent}%; \
+                 inset-inline-start: {percent}% !important;"
             )
             .into(),
             CanGc::from_cx(cx),
