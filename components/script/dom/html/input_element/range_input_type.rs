@@ -1,7 +1,7 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
-use std::cell::Ref;
+use std::cell::{Cell, Ref};
 
 use html5ever::{local_name, ns};
 use js::context::JSContext;
@@ -26,10 +26,21 @@ use crate::dom::input_element::input_type::SpecificInputType;
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::types::MouseEvent;
 
+#[derive(Clone, Copy, Default, JSTraceable, MallocSizeOf, PartialEq)]
+enum DragState {
+    #[default]
+    Idle,
+    Dragging {
+        start_value: f64,
+        focused_value: f64,
+    },
+}
+
 #[derive(Default, JSTraceable, MallocSizeOf, PartialEq)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct RangeInputType {
     shadow_tree: DomRefCell<Option<RangeInputShadowTree>>,
+    drag_state: Cell<DragState>,
 }
 
 impl RangeInputType {
@@ -55,6 +66,28 @@ impl RangeInputType {
         let shadow_root = shadow_root.upcast();
         *self.shadow_tree.borrow_mut() = Some(RangeInputShadowTree::new(cx, shadow_root));
         self.get_or_create_shadow_tree(cx, input)
+    }
+
+    fn thumb_width(&self) -> f64 {
+        // `Node::border_box()` gives us a viewport-relative border-box rect
+        // in `Au`, matching ClientX-relative math in `compute_value_at_event_point`.
+        self.shadow_tree
+            .borrow()
+            .as_ref()
+            .and_then(|tree| tree.slider_thumb.upcast::<Node>().border_box())
+            .map(|rect| rect.size.width.to_f64_px())
+            .unwrap_or(0.0)
+    }
+
+    fn force_thumb_hover(&self) {
+        // Click-to-set teleports the thumb under the cursor, but the document's
+        // hover target still points at the originally hit track/fill until the
+        // next mousemove. Nudge the UA shadow state so the visual matches.
+        if let Some(tree) = self.shadow_tree.borrow().as_ref() {
+            tree.slider_track.set_hover_state(false);
+            tree.slider_fill.set_hover_state(false);
+            tree.slider_thumb.set_hover_state(true);
+        }
     }
 }
 
@@ -132,15 +165,7 @@ impl SpecificInputType for RangeInputType {
         self.get_or_create_shadow_tree(cx, input).update(cx, input)
     }
 
-    /// SLIDER_PLAN P4 - click-to-set on `<input type=range>`.
-    ///
-    /// Handles `mousedown` (primary button, no Cmd/Ctrl, not disabled) by
-    /// computing the value at the event point and dispatching `input` then
-    /// `change`. Subsequent `mousemove`/`mouseup` events are intentionally
-    /// swallowed (returns `true`) so the default text-input handler does
-    /// not see them. Drag state (P5), ESC cancel (P6) and touch parity (P7)
-    /// are scoped to follow-up patches per docs/work/SLIDER_PLAN.md.
-    fn handle_mouse_button_event(
+    fn handle_mouse_event(
         &self,
         input: &HTMLInputElement,
         mouse_event: &MouseEvent,
@@ -149,76 +174,88 @@ impl SpecificInputType for RangeInputType {
         let event = mouse_event.upcast::<Event>();
         let event_type = event.type_();
 
-        // Only act on mousedown for now; swallow other mouse events so the
-        // default text-input dispatch does not run for type=range.
-        if event_type != atom!("mousedown") {
+        if event_type == atom!("mousedown") {
+            // Primary button only, no Cmd/Ctrl modifier (Gecko convention).
+            if mouse_event.Button() != 0 || mouse_event.CtrlKey() || mouse_event.MetaKey() {
+                return true;
+            }
+
+            let element = input.upcast::<Element>();
+            if element.disabled_state() {
+                return true;
+            }
+
+            let start_value = input.ValueAsNumber();
+            self.drag_state.set(DragState::Dragging {
+                start_value,
+                focused_value: start_value,
+            });
+            input
+                .owner_document()
+                .event_handler()
+                .set_captured_range_input(Some(input));
+
+            if let Some(new_value) =
+                compute_value_at_event_point(input, mouse_event, self.thumb_width())
+            {
+                if set_range_value_for_user_event(input, new_value, can_gc) {
+                    fire_input_event(input, can_gc);
+                }
+                self.force_thumb_hover();
+            }
             return true;
         }
 
-        // Primary button only, no Cmd/Ctrl modifier (Gecko convention).
-        if mouse_event.Button() != 0 || mouse_event.CtrlKey() || mouse_event.MetaKey() {
+        if event_type == atom!("mousemove") {
+            if !matches!(self.drag_state.get(), DragState::Dragging { .. }) {
+                return true;
+            }
+            if let Some(new_value) =
+                compute_value_at_event_point(input, mouse_event, self.thumb_width())
+            {
+                if set_range_value_for_user_event(input, new_value, can_gc) {
+                    fire_input_event(input, can_gc);
+                }
+            }
             return true;
         }
 
-        let element = input.upcast::<Element>();
-        if element.disabled_state() {
+        if event_type == atom!("mouseup") {
+            let DragState::Dragging { focused_value, .. } = self.drag_state.get() else {
+                return true;
+            };
+            if let Some(new_value) =
+                compute_value_at_event_point(input, mouse_event, self.thumb_width())
+            {
+                if set_range_value_for_user_event(input, new_value, can_gc) {
+                    fire_input_event(input, can_gc);
+                }
+            }
+            input
+                .owner_document()
+                .event_handler()
+                .set_captured_range_input(None);
+            self.drag_state.set(DragState::Idle);
+            if input.ValueAsNumber() != focused_value {
+                input
+                    .upcast::<EventTarget>()
+                    .fire_bubbling_event(atom!("change"), can_gc);
+            }
             return true;
         }
 
-        // Read the thumb width from the UA shadow tree so the math can
-        // apply Gecko-style thumb-center compensation; fall back to 0 if
-        // the shadow tree is not yet built (the click would have nothing
-        // to hit visually anyway).
-        //
-        // `Node::border_box()` gives us a viewport-relative border-box
-        // rect in `Au`, which is what we want for ClientX-relative math.
-        // (`Element::client_rect()` returns the IDL clientLeft/Top/Width
-        // tuple with origin always at the element's own border, not the
-        // viewport - that one is wrong for hit-test math.)
-        let thumb_width = self
-            .shadow_tree
-            .borrow()
-            .as_ref()
-            .and_then(|tree| tree.slider_thumb.upcast::<Node>().border_box())
-            .map(|rect| rect.size.width.to_f64_px())
-            .unwrap_or(0.0);
+        true
+    }
 
-        let Some(new_value) = compute_value_at_event_point(input, mouse_event, thumb_width)
-        else {
-            return true;
+    fn cancel_range_drag(&self, input: &HTMLInputElement, can_gc: CanGc) -> bool {
+        let DragState::Dragging { start_value, .. } = self.drag_state.get() else {
+            return false;
         };
 
-        // Set the value via the IDL setter so sanitization, step-snapping and
-        // the shadow-tree thumb position all stay in sync.
-        if input.SetValueAsNumber(new_value, can_gc).is_err() {
-            return true;
+        self.drag_state.set(DragState::Idle);
+        if set_range_value_for_user_event(input, start_value, can_gc) {
+            fire_input_event(input, can_gc);
         }
-
-        // Click-to-set teleports the thumb under the cursor, but
-        // Document::current_hover_target still points at whatever was hit
-        // when mousedown fired (typically the track/fill). Without nudging
-        // the shadow tree's hover state, ::slider-thumb:hover does not fire
-        // visually until the user moves the cursor a pixel. Force the thumb
-        // into hover state and clear it from the (now-stale) track/fill so
-        // the post-click visual matches the cursor position. Document's own
-        // hover-target tracking will reconcile naturally on the next
-        // mousemove.
-        if let Some(tree) = self.shadow_tree.borrow().as_ref() {
-            tree.slider_track.set_hover_state(false);
-            tree.slider_fill.set_hover_state(false);
-            tree.slider_thumb.set_hover_state(true);
-        }
-
-        let target = input.upcast::<EventTarget>();
-        // Per HTML spec, fire `input` (composed, bubbling) then `change`.
-        target.fire_event_with_params(
-            atom!("input"),
-            EventBubbles::Bubbles,
-            EventCancelable::NotCancelable,
-            EventComposed::Composed,
-            can_gc,
-        );
-        target.fire_bubbling_event(atom!("change"), can_gc);
         true
     }
 }
@@ -265,6 +302,24 @@ fn compute_value_at_event_point(
     let p_clamped = p.clamp(pos_at_start, pos_at_end);
     let fraction = (p_clamped - pos_at_start) / traversable;
     Some(min + fraction * (max - min))
+}
+
+fn set_range_value_for_user_event(input: &HTMLInputElement, value: f64, can_gc: CanGc) -> bool {
+    let old_value = input.Value();
+    if input.SetValueAsNumber(value, can_gc).is_err() {
+        return false;
+    }
+    input.Value() != old_value
+}
+
+fn fire_input_event(input: &HTMLInputElement, can_gc: CanGc) {
+    input.upcast::<EventTarget>().fire_event_with_params(
+        atom!("input"),
+        EventBubbles::Bubbles,
+        EventCancelable::NotCancelable,
+        EventComposed::Composed,
+        can_gc,
+    );
 }
 
 fn round_halves_positive(n: f64) -> f64 {

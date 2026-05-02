@@ -1977,10 +1977,10 @@ impl HTMLInputElement {
             return;
         }
 
-        // Allow input-type-specific handlers (e.g. Range slider click-to-set)
-        // to consume mouse events before the default text-input handling.
-        // See SLIDER_PLAN.md / SCROLLBAR_PLAN.md.
-        let handled = self.input_type().as_specific().handle_mouse_button_event(
+        // Allow input-type-specific handlers (e.g. Range slider click-to-set
+        // and thumb dragging) to consume mouse events before the default
+        // text-input handling.
+        let handled = self.input_type().as_specific().handle_mouse_event(
             self,
             mouse_event,
             CanGc::from_cx(cx),

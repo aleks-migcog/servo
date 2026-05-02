@@ -33,8 +33,6 @@ use script_bindings::codegen::GenericBindings::EventBinding::EventMethods;
 use script_bindings::codegen::GenericBindings::HTMLElementBinding::HTMLElementMethods;
 use script_bindings::codegen::GenericBindings::HTMLLabelElementBinding::HTMLLabelElementMethods;
 use script_bindings::codegen::GenericBindings::KeyboardEventBinding::KeyboardEventMethods;
-use script_bindings::codegen::GenericBindings::NavigatorBinding::NavigatorMethods;
-use script_bindings::codegen::GenericBindings::PerformanceBinding::PerformanceMethods;
 use script_bindings::codegen::GenericBindings::ShadowRootBinding::ShadowRootMethods;
 use script_bindings::codegen::GenericBindings::TouchBinding::TouchMethods;
 use script_bindings::codegen::GenericBindings::WindowBinding::{ScrollBehavior, WindowMethods};
@@ -74,8 +72,8 @@ use crate::dom::pointerevent::{PointerEvent, PointerId};
 use crate::dom::scrolling_box::{ScrollAxisState, ScrollRequirement, ScrollingBoxAxis};
 use crate::dom::types::{
     ClipboardEvent, CompositionEvent, DataTransfer, Element, Event, EventTarget, GlobalScope,
-    HTMLAnchorElement, HTMLElement, HTMLLabelElement, MouseEvent, Touch, TouchEvent, TouchList,
-    WheelEvent, Window,
+    HTMLAnchorElement, HTMLElement, HTMLInputElement, HTMLLabelElement, MouseEvent, Touch,
+    TouchEvent, TouchList, WheelEvent, Window,
 };
 use crate::drag_data_store::{DragDataStore, Kind, Mode};
 use crate::realms::enter_realm;
@@ -178,6 +176,8 @@ pub(crate) struct DocumentEventHandler {
     down_button_count: Cell<u32>,
     /// The element that is currently hovered by the cursor.
     current_hover_target: MutNullableDom<Element>,
+    /// The range input currently capturing mouse events for thumb dragging.
+    captured_range_input: MutNullableDom<HTMLInputElement>,
     /// The element that was most recently clicked.
     most_recently_clicked_element: MutNullableDom<Element>,
     /// The most recent mouse movement point, used for processing `mouseleave` events.
@@ -215,6 +215,7 @@ impl DocumentEventHandler {
             last_mouse_button_down_point: Default::default(),
             down_button_count: Cell::new(0),
             current_hover_target: Default::default(),
+            captured_range_input: Default::default(),
             most_recently_clicked_element: Default::default(),
             most_recent_mousemove_point: Default::default(),
             current_cursor: Default::default(),
@@ -427,6 +428,10 @@ impl DocumentEventHandler {
         ));
     }
 
+    pub(crate) fn set_captured_range_input(&self, input: Option<&HTMLInputElement>) {
+        self.captured_range_input.set(input);
+    }
+
     fn handle_mouse_left_viewport_event(
         &self,
         cx: &mut JSContext,
@@ -586,6 +591,33 @@ impl DocumentEventHandler {
 
         // Update the cursor when the mouse moves, if it has changed.
         self.set_cursor(Some(hit_test_result.cursor));
+
+        if let Some(captured_input) = self.captured_range_input.get() {
+            if !captured_input.upcast::<Node>().is_connected() {
+                self.captured_range_input.set(None);
+                return;
+            }
+
+            let mouse_event = MouseEvent::new_for_platform_motion_event(
+                cx,
+                &self.window,
+                FireMouseEventType::Move,
+                &hit_test_result,
+                input_event,
+            );
+
+            let pointer_event =
+                mouse_event.to_pointer_event(Atom::from("pointermove"), CanGc::from_cx(cx));
+            pointer_event.upcast::<Event>().set_composed(true);
+            pointer_event
+                .upcast::<Event>()
+                .fire(captured_input.upcast(), CanGc::from_cx(cx));
+
+            mouse_event
+                .upcast::<Event>()
+                .fire(captured_input.upcast(), CanGc::from_cx(cx));
+            return;
+        }
 
         let Some(new_target) = hit_test_result
             .node
@@ -832,10 +864,23 @@ impl DocumentEventHandler {
             self.set_sequential_focus_navigation_starting_point(&hit_test_result.node);
         }
 
-        let Some(element) = hit_test_result
-            .node
-            .inclusive_ancestors(ShadowIncluding::Yes)
-            .find_map(DomRoot::downcast::<Element>)
+        let captured_range_input = if event.action == MouseButtonAction::Up {
+            self.captured_range_input
+                .get()
+                .filter(|input| input.upcast::<Node>().is_connected())
+        } else {
+            None
+        };
+
+        let Some(element) = captured_range_input
+            .as_ref()
+            .map(|input| DomRoot::from_ref(input.upcast::<Element>()))
+            .or_else(|| {
+                hit_test_result
+                    .node
+                    .inclusive_ancestors(ShadowIncluding::Yes)
+                    .find_map(DomRoot::downcast::<Element>)
+            })
         else {
             return;
         };
@@ -859,6 +904,9 @@ impl DocumentEventHandler {
         // Prevent mouse event if element is disabled.
         // TODO: also inert.
         if element.is_actually_disabled() {
+            if captured_range_input.is_some() {
+                self.captured_range_input.set(None);
+            }
             return;
         }
 
@@ -1392,6 +1440,20 @@ impl DocumentEventHandler {
         cx: &mut JSContext,
         keyboard_event: EmbedderKeyboardEvent,
     ) -> InputEventResult {
+        if keyboard_event.event.state == KeyState::Down &&
+            keyboard_event.event.key == Key::Named(NamedKey::Escape)
+        {
+            if let Some(captured_input) = self.captured_range_input.get() {
+                captured_input
+                    .input_type()
+                    .as_specific()
+                    .cancel_range_drag(&captured_input, CanGc::from_cx(cx));
+                captured_input.upcast::<Element>().set_active_state(false);
+                self.captured_range_input.set(None);
+                return Default::default();
+            }
+        }
+
         let target = &self.target_for_events_following_focus();
         let keyevent = KeyboardEvent::new_with_platform_keyboard_event(
             cx,
