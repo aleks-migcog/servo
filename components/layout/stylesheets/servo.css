@@ -278,6 +278,21 @@ input[type="range"]:disabled::slider-thumb {
   border-color: rgba(180, 180, 180);
 }
 
+input[type="range"]:disabled::slider-track,
+input[type="range"]:disabled::slider-fill,
+input[type="range"]:disabled::slider-thumb {
+  cursor: not-allowed;
+}
+
+/* Suppress the hover/active scale-up and color change when the slider is
+   disabled. These overrides have higher specificity than the unstated
+   hover/active rules above (extra :disabled qualifier). */
+input[type="range"]:disabled::slider-thumb:hover,
+input[type="range"]:disabled::slider-thumb:active {
+  background: rgba(180, 180, 180);
+  transform: translate(var(--su-thumb-shift, 0%), -50%);
+}
+
 /* Checkbox and radio button inputs */
 input[type="checkbox"],
 input[type="radio"] {
