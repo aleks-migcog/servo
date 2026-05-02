@@ -215,12 +215,9 @@ input[type="range"]::slider-thumb {
 }
 
 input[type="range"]::slider-track,
-input[type="range"]::slider-fill {
-  cursor: pointer;
-}
-
+input[type="range"]::slider-fill,
 input[type="range"]::slider-thumb {
-  cursor: grab;
+  cursor: pointer;
 }
 
 input[type="range"]::slider-thumb:active {
