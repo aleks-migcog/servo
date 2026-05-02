@@ -229,15 +229,21 @@ input[type="range"]::slider-fill {
    border-radius: 4px;
 }
 
+/* Track and fill default to transparent so author backgrounds on the
+   <input> element (e.g. linear-gradient via inline style, the standard
+   "filled track" pattern in production webapps like LabeledSlider) show
+   through. Authors who want an explicit dark track style it via
+   ::slider-track / ::-webkit-slider-runnable-track / ::-moz-range-track
+   directly. Matches Firefox / Chrome behavior with appearance: none. */
 input[type="range"]::slider-track {
   width: 100%;
   height: 6px;
-  background-color: #3a3a3a;
+  background-color: transparent;
 }
 
 input[type="range"]::slider-fill {
   height: 6px;
-  background-color: #555555;
+  background-color: transparent;
 }
 
 input[type="range"]::slider-thumb {

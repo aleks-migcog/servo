@@ -115,7 +115,9 @@ impl SpecificInputType for RangeInputType {
             // Spec does not describe this in a way that lends itself to
             // reproducible handling of floating-point rounding;
             // Servo may fail a WPT test because .1 * 6 == 6.000000000000001
+            let mut step_for_format: Option<f64> = None;
             if let Some(allowed_value_step) = input.allowed_value_step() {
+                step_for_format = Some(allowed_value_step);
                 let step_base = input.step_base();
                 let steps_from_base = (fval - step_base) / allowed_value_step;
                 if steps_from_base.fract() != 0.0 {
@@ -137,6 +139,22 @@ impl SpecificInputType for RangeInputType {
                         if fval < stepped_minimum {
                             fval = stepped_minimum;
                         }
+                    }
+                }
+            }
+            // Round to step's decimal precision to mask f64 ULP jitter
+            // introduced by `int_steps * step + base` arithmetic above.
+            // Firefox / Chrome use Decimal arithmetic for this; Servo lacks
+            // it, so a value of e.g. 1.65 (step 0.01) ends up as
+            // 1.6500000000000001 in f64 - the user-visible string then
+            // diverges from the reference browsers. Snap to step decimals
+            // to match `<input type=range>.value` semantics across engines.
+            if let Some(step) = step_for_format {
+                if step > 0.0 && step.is_finite() {
+                    let decimals = step_decimal_places(step);
+                    if decimals < 16 {
+                        let factor = 10f64.powi(decimals as i32);
+                        fval = (fval * factor).round() / factor;
                     }
                 }
             }
@@ -330,6 +348,17 @@ fn round_halves_positive(n: f64) -> f64 {
         n.ceil()
     } else {
         n.round()
+    }
+}
+
+/// Count decimal places in `step`'s shortest-roundtrip representation.
+/// Used to round the post-snap f64 to the precision the author asked for,
+/// so e.g. step=0.01 produces "1.65" instead of "1.6500000000000001".
+fn step_decimal_places(step: f64) -> usize {
+    let s = step.abs().to_string();
+    match s.find('.') {
+        Some(idx) => s.len() - idx - 1,
+        None => 0,
     }
 }
 
