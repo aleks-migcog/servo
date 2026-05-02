@@ -78,17 +78,6 @@ impl RangeInputType {
             .map(|rect| rect.size.width.to_f64_px())
             .unwrap_or(0.0)
     }
-
-    fn force_thumb_hover(&self) {
-        // Click-to-set teleports the thumb under the cursor, but the document's
-        // hover target still points at the originally hit track/fill until the
-        // next mousemove. Nudge the UA shadow state so the visual matches.
-        if let Some(tree) = self.shadow_tree.borrow().as_ref() {
-            tree.slider_track.set_hover_state(false);
-            tree.slider_fill.set_hover_state(false);
-            tree.slider_thumb.set_hover_state(true);
-        }
-    }
 }
 
 impl SpecificInputType for RangeInputType {
@@ -219,7 +208,6 @@ impl SpecificInputType for RangeInputType {
                 if set_range_value_for_user_event(input, new_value, can_gc) {
                     fire_input_event(input, can_gc);
                 }
-                self.force_thumb_hover();
             }
             return true;
         }
@@ -460,14 +448,13 @@ impl RangeInputShadowTree {
             (clamped_value - min) / (max - min) * 100.0
         };
 
-        // The dynamic inline-axis offset is fed to the UA stylesheet via a
-        // custom property so the hover/active rules can extend `transform`
-        // (e.g. `scale(1.1)`) without losing the per-value translateX.
+        // Position the thumb without using `transform`; author hover styles
+        // commonly set `transform: scale(...)` and must not break centering.
         self.slider_thumb.set_string_attribute(
             &local_name!("style"),
             format!(
-                "--su-thumb-shift: -{percent}%; \
-                 inset-inline-start: {percent}% !important;"
+                "inset-inline-start: calc({percent}% - {fraction} * 18px) !important;",
+                fraction = percent / 100.0
             )
             .into(),
             CanGc::from_cx(cx),

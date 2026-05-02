@@ -198,7 +198,10 @@ input::color-swatch {
 input[type="range"] {
   margin-inline: 8px;
   width: 100px;
-  min-height: 16px;
+  /* min-height: auto so author `height: Npx` actually applies. The
+     previous 16px hard floor blocked LabeledSlider-style 8px-tall
+     sliders and made the track appear thicker than Firefox / Chrome. */
+  min-height: auto;
   padding: 0px;
   position: relative;
   background: initial;
@@ -206,11 +209,15 @@ input[type="range"] {
 }
 
 input[type="range"]::slider-track,
-input[type="range"]::slider-fill,
-input[type="range"]::slider-thumb {
+input[type="range"]::slider-fill {
   /* All slider elements are centered vertically. */
   top: 50%;
   transform: translateY(-50%);
+  position: absolute;
+}
+
+input[type="range"]::slider-thumb {
+  top: 50%;
   position: absolute;
 }
 
@@ -253,29 +260,29 @@ input[type="range"]::slider-thumb {
   background: #ffffff;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 
-  /* Inline-axis offset is fed from RangeInputShadowTree::update via
-     `--su-thumb-shift` and applied here as a static (non-animated) transform.
-     The hover/active scale-up uses the standalone `scale` property so it
-     animates independently of the position-tracking translate - otherwise
-     transitioning the whole transform also animates per-value position
-     changes, producing a visible "correction slide" after each click. */
-  transform: translate(var(--su-thumb-shift, 0%), -50%);
+  /* Keep slider geometry out of `transform` so author hover styles like
+     `transform: scale(1.2)` do not destroy the UA centering. */
+  margin-top: -9px;
   transform-origin: 50% 50%;
-  scale: 1;
-  transition: scale 0.12s ease, background-color 0.12s ease;
+  transition: transform 0.12s ease, background-color 0.12s ease;
 }
 
 input[type="range"]::slider-thumb:hover {
   background: #007aff;
-  transform: translate(var(--su-thumb-shift, 0%), -50%) scale(1.2);
+  transform: scale(1.2);
 }
 
 input[type="range"]::slider-thumb:active {
   background: #005ecb;
-  transform: translate(var(--su-thumb-shift, 0%), -50%) scale(1.2);
+  transform: scale(1.2);
 }
 
-input[type="range"]:disabled::slider-fill,
+/* Disabled state: keep the fill transparent so the author's input
+   background (commonly a linear-gradient set inline) stays visible -
+   the previous opaque rgba(180, 180, 180) on slider-fill painted a
+   "double track" stripe on top of the author's gradient. The disabled
+   cue is conveyed by the muted thumb plus :disabled cursor, mirroring
+   Firefox / Chrome behavior with appearance: none. */
 input[type="range"]:disabled::slider-thumb {
   background-color: rgba(180, 180, 180);
   border-color: rgba(180, 180, 180);
@@ -293,7 +300,7 @@ input[type="range"]:disabled::slider-thumb {
 input[type="range"]:disabled::slider-thumb:hover,
 input[type="range"]:disabled::slider-thumb:active {
   background: rgba(180, 180, 180);
-  transform: translate(var(--su-thumb-shift, 0%), -50%);
+  transform: none;
 }
 
 /* Checkbox and radio button inputs */

@@ -432,6 +432,36 @@ impl DocumentEventHandler {
         self.captured_range_input.set(input);
     }
 
+    fn silently_update_hover_target(&self, new_hover_target: Option<DomRoot<Element>>) {
+        let old_hover_target = self.current_hover_target.get();
+        if old_hover_target == new_hover_target {
+            return;
+        }
+
+        if let Some(old_target) = old_hover_target {
+            for element in old_target
+                .upcast::<Node>()
+                .inclusive_ancestors(ShadowIncluding::Yes)
+                .filter_map(DomRoot::downcast::<Element>)
+            {
+                element.set_hover_state(false);
+                self.element_for_activation(element).set_active_state(false);
+            }
+        }
+
+        if let Some(ref new_target) = new_hover_target {
+            for element in new_target
+                .upcast::<Node>()
+                .inclusive_ancestors(ShadowIncluding::Yes)
+                .filter_map(DomRoot::downcast::<Element>)
+            {
+                element.set_hover_state(true);
+            }
+        }
+
+        self.update_current_hover_target_and_status(new_hover_target);
+    }
+
     fn handle_mouse_left_viewport_event(
         &self,
         cx: &mut JSContext,
@@ -592,11 +622,20 @@ impl DocumentEventHandler {
         // Update the cursor when the mouse moves, if it has changed.
         self.set_cursor(Some(hit_test_result.cursor));
 
-        if let Some(captured_input) = self.captured_range_input.get() {
+        // During range thumb capture, keep :hover tied to the real cursor
+        // target but dispatch move events to the captured input.
+        let captured_input = self.captured_range_input.get();
+        if let Some(ref captured_input) = captured_input {
             if !captured_input.upcast::<Node>().is_connected() {
                 self.captured_range_input.set(None);
                 return;
             }
+
+            let new_hover = hit_test_result
+                .node
+                .inclusive_ancestors(ShadowIncluding::Yes)
+                .find_map(DomRoot::downcast::<Element>);
+            self.silently_update_hover_target(new_hover);
 
             let mouse_event = MouseEvent::new_for_platform_motion_event(
                 cx,
@@ -887,6 +926,12 @@ impl DocumentEventHandler {
 
         let node = element.upcast::<Node>();
         debug!("{:?} on {:?}", event.action, node.debug_str());
+
+        let new_hover = hit_test_result
+            .node
+            .inclusive_ancestors(ShadowIncluding::Yes)
+            .find_map(DomRoot::downcast::<Element>);
+        self.silently_update_hover_target(new_hover);
 
         // <https://html.spec.whatwg.org/multipage/#selector-active>
         // If the element is being actively pointed at the element is being activated.
