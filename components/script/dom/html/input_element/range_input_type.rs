@@ -5,6 +5,7 @@ use std::cell::{Cell, Ref};
 
 use html5ever::{local_name, ns};
 use js::context::JSContext;
+use keyboard_types::{Key, NamedKey};
 use markup5ever::QualName;
 use script_bindings::codegen::GenericBindings::HTMLInputElementBinding::HTMLInputElementMethods;
 use script_bindings::codegen::GenericBindings::MouseEventBinding::MouseEventMethods;
@@ -261,6 +262,48 @@ impl SpecificInputType for RangeInputType {
         self.drag_state.set(DragState::Idle);
         if set_range_value_for_user_event(input, start_value, can_gc) {
             fire_input_event(input, can_gc);
+        }
+        true
+    }
+
+    fn handle_keydown_event(
+        &self,
+        input: &HTMLInputElement,
+        keyboard_event: &crate::dom::types::KeyboardEvent,
+        can_gc: CanGc,
+    ) -> bool {
+        if input.upcast::<Element>().disabled_state() {
+            return false;
+        }
+
+        let old_value = input.ValueAsNumber();
+        let handled = match keyboard_event.key() {
+            Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowLeft) => {
+                input.StepDown(1, can_gc).is_ok()
+            },
+            Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowRight) => {
+                input.StepUp(1, can_gc).is_ok()
+            },
+            Key::Named(NamedKey::PageDown) => input.StepDown(10, can_gc).is_ok(),
+            Key::Named(NamedKey::PageUp) => input.StepUp(10, can_gc).is_ok(),
+            Key::Named(NamedKey::Home) => input
+                .minimum()
+                .is_some_and(|minimum| input.SetValueAsNumber(minimum, can_gc).is_ok()),
+            Key::Named(NamedKey::End) => input
+                .maximum()
+                .is_some_and(|maximum| input.SetValueAsNumber(maximum, can_gc).is_ok()),
+            _ => false,
+        };
+
+        if !handled {
+            return false;
+        }
+
+        if input.ValueAsNumber() != old_value {
+            fire_input_event(input, can_gc);
+            input
+                .upcast::<EventTarget>()
+                .fire_bubbling_event(atom!("change"), can_gc);
         }
         true
     }

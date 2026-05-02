@@ -2293,6 +2293,17 @@ impl VirtualMethods for HTMLInputElement {
             event.mark_as_handled();
         } else if event.type_() == atom!("keydown") &&
             !event.DefaultPrevented() &&
+            event.downcast::<KeyboardEvent>().is_some_and(|keyevent| {
+                self.input_type().as_specific().handle_keydown_event(
+                    self,
+                    keyevent,
+                    CanGc::from_cx(cx),
+                )
+            })
+        {
+            event.mark_as_handled();
+        } else if event.type_() == atom!("keydown") &&
+            !event.DefaultPrevented() &&
             self.input_type().is_textual_or_password()
         {
             if let Some(keyevent) = event.downcast::<KeyboardEvent>() {

@@ -376,6 +376,15 @@ pub(crate) trait SpecificInputType {
         false
     }
 
+    fn handle_keydown_event(
+        &self,
+        _input: &HTMLInputElement,
+        _keyboard_event: &crate::dom::types::KeyboardEvent,
+        _can_gc: CanGc,
+    ) -> bool {
+        false
+    }
+
     fn cancel_range_drag(&self, _input: &HTMLInputElement, _can_gc: CanGc) -> bool {
         false
     }
