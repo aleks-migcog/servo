@@ -106,7 +106,7 @@ input[type="submit"],
 input[type="reset"],
 input[type="color"],
 input[type="file"]::file-selector-button {
-  cursor: default;
+  cursor: pointer;
   background: ButtonFace;
   border-radius: 2px;
   border: 1px solid ButtonBorder;
@@ -208,11 +208,23 @@ input[type="range"] {
 input[type="range"]::slider-track,
 input[type="range"]::slider-fill,
 input[type="range"]::slider-thumb {
-  /* All slider elements are centered vertically and use the default cursor. */
+  /* All slider elements are centered vertically. */
   top: 50%;
   transform: translateY(-50%);
   position: absolute;
-  cursor: default;
+}
+
+input[type="range"]::slider-track,
+input[type="range"]::slider-fill {
+  cursor: pointer;
+}
+
+input[type="range"]::slider-thumb {
+  cursor: grab;
+}
+
+input[type="range"]::slider-thumb:active {
+  cursor: grabbing;
 }
 
 input[type="range"]::slider-track,
@@ -382,7 +394,7 @@ input:not([type=radio i], [type=checkbox i], [type=reset i], [type=button i], [t
 }
 
 input:is([type=submit i], [type=reset i], [type=button i], [type=checkbox i], [type=radio i], [type=color i]) {
-  cursor: default;
+  cursor: pointer;
 }
 
 textarea {
