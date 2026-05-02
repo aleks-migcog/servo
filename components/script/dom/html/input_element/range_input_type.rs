@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 use std::cell::{Cell, Ref};
 
+use app_units::Au;
 use html5ever::{local_name, ns};
 use js::context::JSContext;
 use keyboard_types::{Key, NamedKey};
@@ -18,12 +19,13 @@ use stylo_atoms::atom;
 use crate::dom::bindings::cell::DomRefCell;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::inheritance::Castable;
+use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::element::{CustomElementCreationMode, Element, ElementCreator};
 use crate::dom::event::{Event, EventBubbles, EventCancelable, EventComposed};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::input_element::HTMLInputElement;
-use crate::dom::input_element::input_type::SpecificInputType;
+use crate::dom::input_element::input_type::{InputType, SpecificInputType};
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::types::MouseEvent;
 
@@ -403,10 +405,13 @@ fn step_decimal_places(step: f64) -> usize {
 /// │ └─ ::slider-fill
 /// └─ ::slider-thumb
 pub(crate) struct RangeInputShadowTree {
+    measurement_task_queued: Cell<bool>,
     slider_fill: Dom<Element>,
     slider_thumb: Dom<Element>,
     slider_track: Dom<Element>,
 }
+
+const DEFAULT_RANGE_THUMB_SIZE_PX: f64 = 18.0;
 
 impl RangeInputShadowTree {
     pub(crate) fn new(cx: &mut JSContext, shadow_root: &Node) -> Self {
@@ -466,6 +471,7 @@ impl RangeInputShadowTree {
             .set_implemented_pseudo_element(PseudoElement::SliderTrack);
 
         Self {
+            measurement_task_queued: Cell::new(false),
             slider_fill: slider_fill.as_traced(),
             slider_thumb: slider_thumb.as_traced(),
             slider_track: slider_track.as_traced(),
@@ -473,6 +479,15 @@ impl RangeInputShadowTree {
     }
 
     pub(crate) fn update(&self, cx: &mut JSContext, input_element: &HTMLInputElement) {
+        self.update_with_measurement(cx, input_element, false);
+    }
+
+    fn update_with_measurement(
+        &self,
+        cx: &mut JSContext,
+        input_element: &HTMLInputElement,
+        allow_reflow: bool,
+    ) {
         let value = input_element.Value();
         let min = input_element
             .minimum()
@@ -493,11 +508,74 @@ impl RangeInputShadowTree {
 
         // Position the thumb without using `transform`; author hover styles
         // commonly set `transform: scale(...)` and must not break centering.
+        //
+        // NOTE: Gecko does this at frame level in `nsRangeFrame::
+        // DoUpdateThumbPosition`, after the anonymous thumb frame is reflowed.
+        // Servo has no equivalent range-specific shadow-content reflow hook yet.
+        // As a pragmatic bridge, write default variables, then measure the
+        // resolved thumb border-box once the DOM is stable. This lets author
+        // `::slider-thumb` / prefixed thumb width and height overrides
+        // participate in fraction positioning.
+        let fraction = percent / 100.0;
+        self.update_thumb_and_fill_styles(
+            percent,
+            fraction,
+            DEFAULT_RANGE_THUMB_SIZE_PX,
+            DEFAULT_RANGE_THUMB_SIZE_PX,
+            cx,
+        );
+
+        let thumb_node = self.slider_thumb.upcast::<Node>();
+        let thumb_size = if allow_reflow {
+            thumb_node.border_box()
+        } else {
+            thumb_node.border_box_without_reflow()
+        }
+        .map(|rect| rect.size)
+        .filter(|size| size.width > Au::new(0) && size.height > Au::new(0));
+
+        if let Some(size) = thumb_size {
+            let thumb_width = size.width.to_f64_px();
+            let thumb_height = size.height.to_f64_px();
+            if (thumb_width - DEFAULT_RANGE_THUMB_SIZE_PX).abs() > f64::EPSILON
+                || (thumb_height - DEFAULT_RANGE_THUMB_SIZE_PX).abs() > f64::EPSILON
+            {
+                self.update_thumb_and_fill_styles(percent, fraction, thumb_width, thumb_height, cx);
+            }
+        } else if !allow_reflow && !self.measurement_task_queued.replace(true) {
+            let input = Trusted::new(input_element);
+            input_element
+                .owner_global()
+                .task_manager()
+                .dom_manipulation_task_source()
+                .queue(task!(measure_range_thumb: move |cx| {
+                    let input = input.root();
+                    let input_type = input.input_type();
+                    if let InputType::Range(range) = &*input_type {
+                        let shadow_tree = range.get_or_create_shadow_tree(cx, &input);
+                        shadow_tree.measurement_task_queued.set(false);
+                        shadow_tree.update_with_measurement(cx, &input, true);
+                    }
+                }));
+        }
+    }
+
+    fn update_thumb_and_fill_styles(
+        &self,
+        percent: f64,
+        fraction: f64,
+        thumb_width: f64,
+        thumb_height: f64,
+        cx: &mut JSContext,
+    ) {
         self.slider_thumb.set_string_attribute(
             &local_name!("style"),
             format!(
-                "inset-inline-start: calc({percent}% - {fraction} * 18px) !important;",
-                fraction = percent / 100.0
+                "--su-thumb-w: {thumb_width}px; \
+                 --su-thumb-h: {thumb_height}px; \
+                 --su-thumb-margin-top: -{half_thumb_height}px; \
+                 inset-inline-start: calc({percent}% - {fraction} * var(--su-thumb-w)) !important;",
+                half_thumb_height = thumb_height / 2.0,
             )
             .into(),
             CanGc::from_cx(cx),
@@ -505,8 +583,8 @@ impl RangeInputShadowTree {
         self.slider_fill.set_string_attribute(
             &local_name!("style"),
             format!(
-                "width: calc({percent}% - {fraction} * 18px + 9px) !important;",
-                fraction = percent / 100.0
+                "width: calc({percent}% - {fraction} * {thumb_width}px + {half_thumb_width}px) !important;",
+                half_thumb_width = thumb_width / 2.0,
             )
             .into(),
             CanGc::from_cx(cx),

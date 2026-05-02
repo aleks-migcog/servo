@@ -261,8 +261,10 @@ input[type="range"]::slider-thumb {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 
   /* Keep slider geometry out of `transform` so author hover styles like
-     `transform: scale(1.2)` do not destroy the UA centering. */
-  margin-top: -9px;
+     `transform: scale(1.2)` do not destroy the UA centering. The range
+     input shadow tree measures the resolved thumb border-box and feeds
+     these variables so author width/height overrides stay centered. */
+  margin-top: var(--su-thumb-margin-top, -9px);
   transform-origin: 50% 50%;
   transition: transform 0.12s ease, background-color 0.12s ease;
 }
