@@ -89,6 +89,15 @@ impl<'dom> ServoLayoutNode<'dom> {
             .and_then(|input| input.unsafe_get().range_value_fraction_for_layout())
     }
 
+    /// Returns the [`PseudoElement`] implemented by this node, if it is a
+    /// UA-shadow element acting as one (e.g. `::slider-thumb`). Layout uses
+    /// this to identify shadow-tree fragments without going through Stylo's
+    /// pseudo-chain machinery, which is reserved for generated pseudos like
+    /// `::before`.
+    pub fn implemented_pseudo_element_for_layout(&self) -> Option<PseudoElement> {
+        self.node.unsafe_get().implemented_pseudo_element()
+    }
+
     /// Get the next sibling of this node.
     ///
     /// # Safety

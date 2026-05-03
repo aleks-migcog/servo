@@ -314,9 +314,10 @@ fn position_range_fill(
 }
 
 fn has_pseudo(fragment: &Fragment, pseudo: PseudoElement) -> bool {
-    fragment
-        .tag()
-        .is_some_and(|tag| tag.pseudo_element_chain.innermost() == Some(pseudo))
+    fragment.tag().is_some_and(|tag| {
+        tag.pseudo_element_chain.innermost() == Some(pseudo)
+            || tag.implemented_pseudo_element == Some(pseudo)
+    })
 }
 
 fn set_border_box_origin(fragment: &mut BoxFragment, origin: PhysicalPoint<Au>) {

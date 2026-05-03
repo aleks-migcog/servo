@@ -164,6 +164,7 @@ impl BaseFragmentInfo {
             tag: Some(Tag {
                 node: OpaqueNode(id),
                 pseudo_element_chain: Default::default(),
+                implemented_pseudo_element: None,
             }),
             flags: FragmentFlags::empty(),
         }
@@ -279,6 +280,10 @@ malloc_size_of_is_0!(FragmentFlags);
 pub(crate) struct Tag {
     pub(crate) node: OpaqueNode,
     pub(crate) pseudo_element_chain: PseudoElementChain,
+    /// The pseudo-element this node *implements* via the UA shadow tree
+    /// (e.g. `::slider-thumb`), distinct from `pseudo_element_chain` which is
+    /// for CSS-generated pseudos (`::before`, `::after`).
+    pub(crate) implemented_pseudo_element: Option<PseudoElement>,
 }
 
 impl Tag {
@@ -292,6 +297,7 @@ impl From<ServoLayoutNode<'_>> for Tag {
         Self {
             node: node.opaque(),
             pseudo_element_chain: node.pseudo_element_chain(),
+            implemented_pseudo_element: node.implemented_pseudo_element_for_layout(),
         }
     }
 }

@@ -162,6 +162,7 @@ impl InspectorHighlight {
                 node,
                 // TODO: Support highlighting pseudo-elements.
                 pseudo_element_chain: Default::default(),
+                implemented_pseudo_element: None,
             },
             state: None,
         }
