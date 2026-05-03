@@ -37,6 +37,7 @@ use crate::layout_box_base::IndependentFormattingContextLayoutResult;
 use crate::positioned::{
     AbsolutelyPositionedBox, PositioningContext, PositioningContextLength, relative_adjustement,
 };
+use crate::scrollbar::{ScrollbarAutoPolicy, scrollbar_gutter_for_device};
 use crate::sizing::{
     ComputeInlineContentSizes, ContentSizes, InlineContentSizesResult, IntrinsicSizingMode,
     LazySize, Size, SizeConstraint, Sizes,
@@ -614,6 +615,42 @@ impl FlexContainer {
         containing_block: &ContainingBlock,
         lazy_block_size: &LazySize,
     ) -> IndependentFormattingContextLayoutResult {
+        // Reserve inline-end / block-end gutter for any classic scrollbar
+        // this flex container would render due to `overflow: scroll/auto`.
+        // Servo does not paint the scrollbars itself yet (see ISSUES_0503
+        // bug "scrollbar gutter not reserved"), but embedders such as
+        // Host6 overlay them on top of the rendered surface; without this
+        // reservation the flex children extend under the overlay (the
+        // app_simple DetailPanel symptom). Container's outer/border rect
+        // stays unchanged - we only shrink the area visible to children
+        // through `flex_context.containing_block` and downstream sizing.
+        let scrollbar_gutter = scrollbar_gutter_for_device(
+            &self.style,
+            FragmentFlags::empty(),
+            layout_context.style_context.stylist.device(),
+            ScrollbarAutoPolicy::TreatAsScroll,
+        );
+        let scrollbar_inline_sum = scrollbar_gutter.inline_sum();
+        let scrollbar_block_sum = scrollbar_gutter.block_sum();
+        let child_inline = (containing_block.size.inline - scrollbar_inline_sum).max(Au::zero());
+        let child_block = match containing_block.size.block {
+            SizeConstraint::Definite(b) => {
+                SizeConstraint::Definite((b - scrollbar_block_sum).max(Au::zero()))
+            },
+            SizeConstraint::MinMax(min, max) => SizeConstraint::MinMax(
+                (min - scrollbar_block_sum).max(Au::zero()),
+                max.map(|m| (m - scrollbar_block_sum).max(Au::zero())),
+            ),
+        };
+        let child_containing_block = ContainingBlock {
+            size: ContainingBlockSize {
+                inline: child_inline,
+                block: child_block,
+            },
+            style: containing_block.style,
+        };
+        let containing_block = &child_containing_block;
+
         let mut flex_context = FlexContext {
             config: self.config.clone(),
             layout_context,
