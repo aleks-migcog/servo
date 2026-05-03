@@ -224,19 +224,18 @@ fn position_range_input_shadow_tree(range: &mut BoxFragment, value_fraction: f32
         value_fraction
     };
 
-    let thumb_size = range
-        .children
-        .iter()
-        .find(|child| has_pseudo(child, PseudoElement::SliderThumb))
-        .and_then(|child| child.retrieve_box_fragment())
-        .map(|thumb| thumb.borrow().border_rect().size)
-        .unwrap_or_default();
-
     for child in &range.children {
         if has_pseudo(child, PseudoElement::SliderTrack) {
             if let Some(track) = child.retrieve_box_fragment() {
                 let mut track = track.borrow_mut();
                 let track_size = track.border_rect().size;
+                let thumb_size = track
+                    .children
+                    .iter()
+                    .find(|child| has_pseudo(child, PseudoElement::SliderThumb))
+                    .and_then(|child| child.retrieve_box_fragment())
+                    .map(|thumb| thumb.borrow().border_rect().size)
+                    .unwrap_or_default();
                 let origin = if is_horizontal {
                     PhysicalPoint::new(
                         Au::zero(),
@@ -256,30 +255,53 @@ fn position_range_input_shadow_tree(range: &mut BoxFragment, value_fraction: f32
                     fraction,
                     is_horizontal,
                 );
-            }
-        } else if has_pseudo(child, PseudoElement::SliderThumb) {
-            if let Some(thumb) = child.retrieve_box_fragment() {
-                let mut thumb = thumb.borrow_mut();
-                let traversable = if is_horizontal {
-                    content_size.width - thumb_size.width
-                } else {
-                    content_size.height - thumb_size.height
-                };
-                let progress = traversable.scale_by(fraction);
-                let origin = if is_horizontal {
-                    PhysicalPoint::new(
-                        progress,
-                        (content_size.height - thumb_size.height).scale_by(0.5),
-                    )
-                } else {
-                    PhysicalPoint::new(
-                        (content_size.width - thumb_size.width).scale_by(0.5),
-                        progress,
-                    )
-                };
-                set_border_box_origin(&mut thumb, origin);
+                position_range_thumb(
+                    &mut track,
+                    content_size,
+                    track_size,
+                    thumb_size,
+                    fraction,
+                    is_horizontal,
+                );
             }
         }
+    }
+}
+
+fn position_range_thumb(
+    track: &mut BoxFragment,
+    range_size: PhysicalSize<Au>,
+    track_size: PhysicalSize<Au>,
+    thumb_size: PhysicalSize<Au>,
+    fraction: f32,
+    is_horizontal: bool,
+) {
+    for child in &track.children {
+        if !has_pseudo(child, PseudoElement::SliderThumb) {
+            continue;
+        }
+        let Some(thumb) = child.retrieve_box_fragment() else {
+            continue;
+        };
+        let mut thumb = thumb.borrow_mut();
+        let traversable = if is_horizontal {
+            range_size.width - thumb_size.width
+        } else {
+            range_size.height - thumb_size.height
+        };
+        let progress = traversable.scale_by(fraction);
+        let origin = if is_horizontal {
+            PhysicalPoint::new(
+                progress,
+                (track_size.height - thumb_size.height).scale_by(0.5),
+            )
+        } else {
+            PhysicalPoint::new(
+                (track_size.width - thumb_size.width).scale_by(0.5),
+                progress,
+            )
+        };
+        set_border_box_origin(&mut thumb, origin);
     }
 }
 
