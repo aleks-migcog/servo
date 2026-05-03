@@ -4,6 +4,7 @@
 
 use std::cell::{Cell, RefCell, RefMut};
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::{f64, ptr};
 
 use dom_struct::dom_struct;
@@ -137,6 +138,14 @@ pub(crate) struct HTMLInputElement {
     /// textual input. This is cached so that it can be read during layout.
     is_textual_or_password: Cell<bool>,
 
+    /// Live snapshot of `<input type=range>` value-as-fraction-of-range, in `[0.0, 1.0]`.
+    /// Refreshed by the script thread on every value/min/max/step/type change and on attribute
+    /// mutation; read by the layout thread without taking any [`DomRefCell`] borrow, which is
+    /// required because the script and layout threads can run concurrently. Encoded as
+    /// `f32::to_bits` with [`RANGE_FRACTION_NONE`] as the sentinel for "no fraction available"
+    /// (i.e. not a range input or `min`/`max` ill-defined).
+    range_value_fraction: AtomicU32,
+
     /// <https://html.spec.whatwg.org/multipage/#concept-input-checked-dirty-flag>
     checked_changed: Cell<bool>,
     placeholder: DomRefCell<DOMString>,
@@ -177,6 +186,11 @@ static DEFAULT_INPUT_SIZE: u32 = 20;
 static DEFAULT_MAX_LENGTH: i32 = -1;
 static DEFAULT_MIN_LENGTH: i32 = -1;
 
+/// Sentinel for [`HTMLInputElement::range_value_fraction`] meaning "no fraction available".
+/// Chosen as `u32::MAX` because valid fractions are in `[0.0, 1.0]` whose `f32::to_bits`
+/// representations all lie in `[0x0000_0000, 0x3F80_0000]`, so `u32::MAX` cannot collide.
+const RANGE_FRACTION_NONE: u32 = u32::MAX;
+
 #[expect(non_snake_case)]
 impl HTMLInputElement {
     fn new_inherited(
@@ -198,6 +212,7 @@ impl HTMLInputElement {
             ),
             input_type: DomRefCell::new(InputType::new_text()),
             is_textual_or_password: Cell::new(true),
+            range_value_fraction: AtomicU32::new(RANGE_FRACTION_NONE),
             placeholder: DomRefCell::new(DOMString::new()),
             checked_changed: Cell::new(false),
             maxlength: Cell::new(DEFAULT_MAX_LENGTH),
@@ -485,7 +500,11 @@ impl HTMLInputElement {
         }
     }
 
-    pub(crate) fn range_value_fraction_for_layout(&self) -> Option<f32> {
+    /// Compute the current value-as-fraction-of-range. Script-thread only because it
+    /// borrows [`Self::input_type`] and other [`DomRefCell`]-backed state; the layout
+    /// thread must read the cached snapshot via
+    /// [`LayoutDom::<HTMLInputElement>::range_value_fraction_for_layout`] instead.
+    fn compute_range_value_fraction(&self) -> Option<f32> {
         if !matches!(*self.input_type(), InputType::Range(_)) {
             return None;
         }
@@ -501,6 +520,19 @@ impl HTMLInputElement {
             .unwrap_or(self.default_range_value())
             .clamp(min, max);
         Some(((value - min) / (max - min)) as f32)
+    }
+
+    /// Recompute and publish the layout-readable snapshot of the range fraction. Must be
+    /// called from the script thread after any change that can affect the fraction:
+    /// `value`, `min`, `max`, `step` or `type` mutations. Cheap (a handful of `f64` ops
+    /// plus one relaxed atomic store) and a no-op for non-range inputs (stores the
+    /// "no fraction" sentinel, which is also the constructor default).
+    fn update_range_value_fraction_for_layout(&self) {
+        let bits = self
+            .compute_range_value_fraction()
+            .map(f32::to_bits)
+            .unwrap_or(RANGE_FRACTION_NONE);
+        self.range_value_fraction.store(bits, Ordering::Relaxed);
     }
 
     /// <https://html.spec.whatwg.org/multipage#concept-input-step-default>
@@ -973,6 +1005,23 @@ impl<'dom> LayoutDom<'dom, HTMLInputElement> {
             return None;
         }
         Some(self.unsafe_get().shared_selection.clone())
+    }
+
+    /// Layout-thread reader for the `<input type=range>` value-as-fraction-of-range. Pure
+    /// atomic load with no [`DomRefCell`] borrow, so it is safe to call concurrently with the
+    /// script thread mutating other element state. The script thread keeps the snapshot fresh
+    /// via [`HTMLInputElement::update_range_value_fraction_for_layout`]. Returns `None` if
+    /// the element is not a range input or `min`/`max` are ill-defined.
+    pub(crate) fn range_value_fraction_for_layout(self) -> Option<f32> {
+        let bits = self
+            .unsafe_get()
+            .range_value_fraction
+            .load(Ordering::Relaxed);
+        if bits == RANGE_FRACTION_NONE {
+            None
+        } else {
+            Some(f32::from_bits(bits))
+        }
     }
 }
 
@@ -1921,6 +1970,7 @@ impl HTMLInputElement {
     fn value_changed(&self, can_gc: CanGc) {
         self.maybe_update_shared_selection();
         self.update_related_validity_states(can_gc);
+        self.update_range_value_fraction_for_layout();
         // TODO https://github.com/servo/servo/issues/43253
         let mut cx = unsafe { script_bindings::script_runtime::temp_cx() };
         let cx = &mut cx;
@@ -1998,12 +2048,20 @@ impl HTMLInputElement {
         // Allow input-type-specific handlers (e.g. Range slider click-to-set
         // and thumb dragging) to consume mouse events before the default
         // text-input handling.
-        let handled = self.input_type().as_specific().handle_mouse_event(
-            self,
-            mouse_event,
-            CanGc::from_cx(cx),
-        );
-        if handled {
+        //
+        // The `Ref<InputType>` borrow taken to call `as_specific()` is scoped
+        // to the inner block so it is dropped *before* dispatching any
+        // `input`/`change` events. Synchronously running author script (e.g.
+        // React `onChange` setting `input.type = ...`) would otherwise re-enter
+        // `attribute_mutated` and panic on `input_type.borrow_mut()`.
+        let result = {
+            let input_type = self.input_type();
+            input_type
+                .as_specific()
+                .handle_mouse_event(self, mouse_event, CanGc::from_cx(cx))
+        };
+        result.dispatch(self, CanGc::from_cx(cx));
+        if result.handled {
             return;
         }
 
@@ -2312,11 +2370,18 @@ impl VirtualMethods for HTMLInputElement {
         } else if event.type_() == atom!("keydown") &&
             !event.DefaultPrevented() &&
             event.downcast::<KeyboardEvent>().is_some_and(|keyevent| {
-                self.input_type().as_specific().handle_keydown_event(
-                    self,
-                    keyevent,
-                    CanGc::from_cx(cx),
-                )
+                // Same scoped-Ref / outer-dispatch pattern as
+                // `handle_mouse_event` above - dispatching `input`/`change`
+                // events while holding `Ref<InputType>` re-enters
+                // `attribute_mutated` and panics on `input_type.borrow_mut()`.
+                let result = {
+                    let input_type = self.input_type();
+                    input_type
+                        .as_specific()
+                        .handle_keydown_event(self, keyevent, CanGc::from_cx(cx))
+                };
+                result.dispatch(self, CanGc::from_cx(cx));
+                result.handled
             })
         {
             event.mark_as_handled();

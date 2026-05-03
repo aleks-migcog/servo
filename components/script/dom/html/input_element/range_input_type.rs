@@ -22,10 +22,9 @@ use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::element::{CustomElementCreationMode, Element, ElementCreator};
-use crate::dom::event::{Event, EventBubbles, EventCancelable, EventComposed};
-use crate::dom::eventtarget::EventTarget;
+use crate::dom::event::Event;
 use crate::dom::input_element::HTMLInputElement;
-use crate::dom::input_element::input_type::{InputType, SpecificInputType};
+use crate::dom::input_element::input_type::{InputType, InputUserEventResult, SpecificInputType};
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::types::MouseEvent;
 
@@ -180,19 +179,26 @@ impl SpecificInputType for RangeInputType {
         input: &HTMLInputElement,
         mouse_event: &MouseEvent,
         can_gc: CanGc,
-    ) -> bool {
+    ) -> InputUserEventResult {
+        // NOTE: do not dispatch `input`/`change` events from this method - the
+        // caller in HTMLInputElement::handle_mouse_event holds a `Ref<InputType>`
+        // borrow across the call. Synchronously running author script could
+        // re-enter `attribute_mutated` and panic on `input_type.borrow_mut()`.
+        // Report events via the returned `InputUserEventResult`; the caller
+        // will dispatch them after dropping the borrow.
         let event = mouse_event.upcast::<Event>();
         let event_type = event.type_();
+        let mut result = InputUserEventResult::handled();
 
         if event_type == atom!("mousedown") {
             // Primary button only, no Cmd/Ctrl modifier (Gecko convention).
             if mouse_event.Button() != 0 || mouse_event.CtrlKey() || mouse_event.MetaKey() {
-                return true;
+                return result;
             }
 
             let element = input.upcast::<Element>();
             if element.disabled_state() {
-                return true;
+                return result;
             }
 
             let start_value = input.ValueAsNumber();
@@ -209,35 +215,35 @@ impl SpecificInputType for RangeInputType {
                 compute_value_at_event_point(input, mouse_event, self.thumb_width())
             {
                 if set_range_value_for_user_event(input, new_value, can_gc) {
-                    fire_input_event(input, can_gc);
+                    result.fire_input = true;
                 }
             }
-            return true;
+            return result;
         }
 
         if event_type == atom!("mousemove") {
             if !matches!(self.drag_state.get(), DragState::Dragging { .. }) {
-                return true;
+                return result;
             }
             if let Some(new_value) =
                 compute_value_at_event_point(input, mouse_event, self.thumb_width())
             {
                 if set_range_value_for_user_event(input, new_value, can_gc) {
-                    fire_input_event(input, can_gc);
+                    result.fire_input = true;
                 }
             }
-            return true;
+            return result;
         }
 
         if event_type == atom!("mouseup") {
             let DragState::Dragging { focused_value, .. } = self.drag_state.get() else {
-                return true;
+                return result;
             };
             if let Some(new_value) =
                 compute_value_at_event_point(input, mouse_event, self.thumb_width())
             {
                 if set_range_value_for_user_event(input, new_value, can_gc) {
-                    fire_input_event(input, can_gc);
+                    result.fire_input = true;
                 }
             }
             input
@@ -246,26 +252,29 @@ impl SpecificInputType for RangeInputType {
                 .set_captured_range_input(None);
             self.drag_state.set(DragState::Idle);
             if input.ValueAsNumber() != focused_value {
-                input
-                    .upcast::<EventTarget>()
-                    .fire_bubbling_event(atom!("change"), can_gc);
+                result.fire_change = true;
             }
-            return true;
+            return result;
         }
 
-        true
+        result
     }
 
-    fn cancel_range_drag(&self, input: &HTMLInputElement, can_gc: CanGc) -> bool {
+    fn cancel_range_drag(
+        &self,
+        input: &HTMLInputElement,
+        can_gc: CanGc,
+    ) -> InputUserEventResult {
         let DragState::Dragging { start_value, .. } = self.drag_state.get() else {
-            return false;
+            return InputUserEventResult::unhandled();
         };
 
         self.drag_state.set(DragState::Idle);
+        let mut result = InputUserEventResult::handled();
         if set_range_value_for_user_event(input, start_value, can_gc) {
-            fire_input_event(input, can_gc);
+            result.fire_input = true;
         }
-        true
+        result
     }
 
     fn handle_keydown_event(
@@ -273,9 +282,11 @@ impl SpecificInputType for RangeInputType {
         input: &HTMLInputElement,
         keyboard_event: &crate::dom::types::KeyboardEvent,
         can_gc: CanGc,
-    ) -> bool {
+    ) -> InputUserEventResult {
+        // See `handle_mouse_event`: do not dispatch events here, the caller
+        // holds a `Ref<InputType>` borrow across this call.
         if input.upcast::<Element>().disabled_state() {
-            return false;
+            return InputUserEventResult::unhandled();
         }
 
         let old_value = input.ValueAsNumber();
@@ -298,16 +309,15 @@ impl SpecificInputType for RangeInputType {
         };
 
         if !handled {
-            return false;
+            return InputUserEventResult::unhandled();
         }
 
+        let mut result = InputUserEventResult::handled();
         if input.ValueAsNumber() != old_value {
-            fire_input_event(input, can_gc);
-            input
-                .upcast::<EventTarget>()
-                .fire_bubbling_event(atom!("change"), can_gc);
+            result.fire_input = true;
+            result.fire_change = true;
         }
-        true
+        result
     }
 }
 
@@ -361,16 +371,6 @@ fn set_range_value_for_user_event(input: &HTMLInputElement, value: f64, can_gc: 
         return false;
     }
     input.Value() != old_value
-}
-
-fn fire_input_event(input: &HTMLInputElement, can_gc: CanGc) {
-    input.upcast::<EventTarget>().fire_event_with_params(
-        atom!("input"),
-        EventBubbles::Bubbles,
-        EventCancelable::NotCancelable,
-        EventComposed::Composed,
-        can_gc,
-    );
 }
 
 fn round_halves_positive(n: f64) -> f64 {

@@ -81,12 +81,14 @@ impl<'dom> ServoLayoutNode<'dom> {
         self.node.first_child_ref().map(Into::into)
     }
 
-    /// Return this node's live range-control value as a fraction of its range,
-    /// if it is an `<input type=range>`.
+    /// Return this node's range-control value as a fraction of its range, if it is an
+    /// `<input type=range>`. Reads the layout-safe atomic snapshot maintained by
+    /// [`HTMLInputElement::update_range_value_fraction_for_layout`] - never touches a
+    /// [`DomRefCell`], so it is safe to call concurrently with the script thread.
     pub fn range_value_fraction_for_layout(&self) -> Option<f32> {
         self.node
             .downcast::<HTMLInputElement>()
-            .and_then(|input| input.unsafe_get().range_value_fraction_for_layout())
+            .and_then(|input| input.range_value_fraction_for_layout())
     }
 
     /// Returns the [`PseudoElement`] implemented by this node, if it is a

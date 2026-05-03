@@ -1515,10 +1515,17 @@ impl DocumentEventHandler {
             keyboard_event.event.key == Key::Named(NamedKey::Escape)
         {
             if let Some(captured_input) = self.captured_range_input.get() {
-                captured_input
-                    .input_type()
-                    .as_specific()
-                    .cancel_range_drag(&captured_input, CanGc::from_cx(cx));
+                // Scoped-Ref / outer-dispatch pattern: dispatching the `input`
+                // event from inside the `Ref<InputType>` borrow would re-enter
+                // `attribute_mutated` and panic on `input_type.borrow_mut()`
+                // if author script mutates the input synchronously.
+                let result = {
+                    let input_type = captured_input.input_type();
+                    input_type
+                        .as_specific()
+                        .cancel_range_drag(&captured_input, CanGc::from_cx(cx))
+                };
+                result.dispatch(&captured_input, CanGc::from_cx(cx));
                 captured_input.upcast::<Element>().set_active_state(false);
                 self.captured_range_input.set(None);
                 return Default::default();

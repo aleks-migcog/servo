@@ -7,12 +7,13 @@ use script_bindings::codegen::GenericBindings::HTMLInputElementBinding::HTMLInpu
 use script_bindings::domstring::DOMString;
 use script_bindings::root::DomRoot;
 use script_bindings::script_runtime::CanGc;
-use stylo_atoms::Atom;
+use stylo_atoms::{Atom, atom};
 use time::OffsetDateTime;
 
 use crate::dom::attr::Attr;
+use crate::dom::bindings::inheritance::Castable;
 use crate::dom::element::AttributeMutation;
-use crate::dom::event::Event;
+use crate::dom::event::{Event, EventBubbles, EventCancelable, EventComposed};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::filelist::FileList;
 use crate::dom::htmlformelement::HTMLFormElement;
@@ -362,9 +363,15 @@ pub(crate) trait SpecificInputType {
     ) {
     }
 
-    /// Hook for input-type-specific mouse event handling. Returning
-    /// `true` short-circuits the default text-input mouse handling, signalling
-    /// that this input type has consumed the event.
+    /// Hook for input-type-specific mouse event handling. The returned
+    /// [`InputUserEventResult`] tells the caller whether to short-circuit the
+    /// default text-input mouse handling (`handled`) and whether to fire
+    /// `input` / `change` events. Implementations MUST NOT dispatch those
+    /// events themselves: the outer caller in [`HTMLInputElement`] holds a
+    /// `Ref<InputType>` borrow across this call, and synchronously running
+    /// author script (e.g. React `onChange`) while that borrow is live can
+    /// re-enter [`HTMLInputElement::attribute_mutated`] and panic with
+    /// "RefCell already borrowed" on `input_type.borrow_mut()`.
     ///
     /// Used by `<input type=range>` for click-to-set and thumb dragging.
     fn handle_mouse_event(
@@ -372,20 +379,93 @@ pub(crate) trait SpecificInputType {
         _input: &HTMLInputElement,
         _mouse_event: &crate::dom::types::MouseEvent,
         _can_gc: CanGc,
-    ) -> bool {
-        false
+    ) -> InputUserEventResult {
+        InputUserEventResult::unhandled()
     }
 
+    /// Hook for input-type-specific keydown handling. Same dispatch contract
+    /// as [`Self::handle_mouse_event`].
     fn handle_keydown_event(
         &self,
         _input: &HTMLInputElement,
         _keyboard_event: &crate::dom::types::KeyboardEvent,
         _can_gc: CanGc,
-    ) -> bool {
-        false
+    ) -> InputUserEventResult {
+        InputUserEventResult::unhandled()
     }
 
-    fn cancel_range_drag(&self, _input: &HTMLInputElement, _can_gc: CanGc) -> bool {
-        false
+    /// Cancel an in-progress drag (e.g. range thumb drag on Esc). Same
+    /// dispatch contract as [`Self::handle_mouse_event`]: any `input`/`change`
+    /// event that should fire must be reported via the returned
+    /// [`InputUserEventResult`] flags rather than dispatched here.
+    fn cancel_range_drag(
+        &self,
+        _input: &HTMLInputElement,
+        _can_gc: CanGc,
+    ) -> InputUserEventResult {
+        InputUserEventResult::unhandled()
+    }
+}
+
+/// Outcome of a user-driven input event handler ([`SpecificInputType::handle_mouse_event`],
+/// [`SpecificInputType::handle_keydown_event`], [`SpecificInputType::cancel_range_drag`]).
+///
+/// Carries the bookkeeping that used to be done synchronously inside those handlers:
+/// whether the default text-input behaviour should be short-circuited, and which DOM
+/// events (`input` / `change`) should fire. The caller dispatches the events *after*
+/// the `Ref<InputType>` borrow taken to call `as_specific()` has been dropped, which
+/// is required to avoid re-entering `attribute_mutated`'s `input_type.borrow_mut()`
+/// from author script (e.g. React `onChange` setting `input.type = ...`).
+#[must_use]
+pub(crate) struct InputUserEventResult {
+    /// Whether this handler consumed the event. The caller short-circuits its
+    /// default handling when set.
+    pub(crate) handled: bool,
+    /// Whether to fire a non-cancelable, bubbling, composed `input` event after
+    /// the `Ref<InputType>` borrow is released.
+    pub(crate) fire_input: bool,
+    /// Whether to fire a bubbling `change` event after the `Ref<InputType>`
+    /// borrow is released.
+    pub(crate) fire_change: bool,
+}
+
+impl InputUserEventResult {
+    /// Default: nothing consumed, no events to fire.
+    pub(crate) fn unhandled() -> Self {
+        Self {
+            handled: false,
+            fire_input: false,
+            fire_change: false,
+        }
+    }
+
+    /// Event was consumed but no input/change should fire.
+    pub(crate) fn handled() -> Self {
+        Self {
+            handled: true,
+            fire_input: false,
+            fire_change: false,
+        }
+    }
+
+    /// Fire any pending `input` / `change` events on `input`. Must be called
+    /// only after the `Ref<InputType>` borrow used to obtain this result has
+    /// been dropped - dispatching events from inside that borrow is the bug
+    /// this whole indirection exists to prevent.
+    pub(crate) fn dispatch(&self, input: &HTMLInputElement, can_gc: CanGc) {
+        if self.fire_input {
+            input.upcast::<EventTarget>().fire_event_with_params(
+                atom!("input"),
+                EventBubbles::Bubbles,
+                EventCancelable::NotCancelable,
+                EventComposed::Composed,
+                can_gc,
+            );
+        }
+        if self.fire_change {
+            input
+                .upcast::<EventTarget>()
+                .fire_bubbling_event(atom!("change"), can_gc);
+        }
     }
 }
