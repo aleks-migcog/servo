@@ -51,6 +51,7 @@ pub(crate) struct ExtraBackground {
 #[derive(Clone, Debug, MallocSizeOf)]
 pub(crate) enum SpecificLayoutInfo {
     Grid(Box<SpecificTaffyGridInfo>),
+    RangeInput { value_fraction: f32 },
     TableCellWithCollapsedBorders,
     TableGridWithCollapsedBorders(Box<SpecificTableGridInfo>),
     TableWrapper,

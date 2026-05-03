@@ -8,11 +8,13 @@ use app_units::Au;
 use malloc_size_of_derive::MallocSizeOf;
 use paint_api::display_list::AxesScrollSensitivity;
 use servo_base::print_tree::PrintTree;
+use style::Zero;
 use style::computed_values::position::T as Position;
+use style::selector_parser::PseudoElement;
 
-use super::{BoxFragment, ContainingBlockManager, Fragment};
+use super::{BoxFragment, ContainingBlockManager, Fragment, SpecificLayoutInfo};
 use crate::ArcRefCell;
-use crate::geom::PhysicalRect;
+use crate::geom::{PhysicalPoint, PhysicalRect, PhysicalSize};
 
 #[derive(MallocSizeOf)]
 pub struct FragmentTree {
@@ -39,10 +41,12 @@ pub struct FragmentTree {
 
 impl FragmentTree {
     pub(crate) fn new(
-        root_fragments: Vec<Fragment>,
+        mut root_fragments: Vec<Fragment>,
         initial_containing_block: PhysicalRect<Au>,
         viewport_scroll_sensitivity: AxesScrollSensitivity,
     ) -> Self {
+        position_range_input_shadow_trees(&mut root_fragments);
+
         let fragment_tree = Self {
             root_fragments,
             scrollable_overflow: Cell::default(),
@@ -179,4 +183,164 @@ impl FragmentTree {
 
         find_body(&self.root_fragments)
     }
+}
+
+fn position_range_input_shadow_trees(fragments: &mut [Fragment]) {
+    for fragment in fragments {
+        let Some(box_fragment) = fragment.retrieve_box_fragment() else {
+            continue;
+        };
+
+        {
+            let mut fragment = box_fragment.borrow_mut();
+            let range_value_fraction =
+                fragment
+                    .specific_layout_info()
+                    .as_deref()
+                    .and_then(|info| match info {
+                        SpecificLayoutInfo::RangeInput { value_fraction } => Some(*value_fraction),
+                        _ => None,
+                    });
+            if let Some(value_fraction) = range_value_fraction {
+                position_range_input_shadow_tree(&mut fragment, value_fraction);
+            }
+            position_range_input_shadow_trees(&mut fragment.children);
+        }
+    }
+}
+
+fn position_range_input_shadow_tree(range: &mut BoxFragment, value_fraction: f32) {
+    let content_size = range.content_rect().size;
+    let writing_mode = range.style().writing_mode;
+    let is_horizontal = writing_mode.is_horizontal();
+    let is_reversed = if is_horizontal {
+        !writing_mode.is_bidi_ltr()
+    } else {
+        !writing_mode.is_inline_tb()
+    };
+    let fraction = if is_reversed {
+        1.0 - value_fraction
+    } else {
+        value_fraction
+    };
+
+    let thumb_size = range
+        .children
+        .iter()
+        .find(|child| has_pseudo(child, PseudoElement::SliderThumb))
+        .and_then(|child| child.retrieve_box_fragment())
+        .map(|thumb| thumb.borrow().border_rect().size)
+        .unwrap_or_default();
+
+    for child in &range.children {
+        if has_pseudo(child, PseudoElement::SliderTrack) {
+            if let Some(track) = child.retrieve_box_fragment() {
+                let mut track = track.borrow_mut();
+                let track_size = track.border_rect().size;
+                let origin = if is_horizontal {
+                    PhysicalPoint::new(
+                        Au::zero(),
+                        (content_size.height - track_size.height).scale_by(0.5),
+                    )
+                } else {
+                    PhysicalPoint::new(
+                        (content_size.width - track_size.width).scale_by(0.5),
+                        Au::zero(),
+                    )
+                };
+                set_border_box_origin(&mut track, origin);
+                position_range_fill(
+                    &mut track,
+                    content_size,
+                    thumb_size,
+                    fraction,
+                    is_horizontal,
+                );
+            }
+        } else if has_pseudo(child, PseudoElement::SliderThumb) {
+            if let Some(thumb) = child.retrieve_box_fragment() {
+                let mut thumb = thumb.borrow_mut();
+                let traversable = if is_horizontal {
+                    content_size.width - thumb_size.width
+                } else {
+                    content_size.height - thumb_size.height
+                };
+                let progress = traversable.scale_by(fraction);
+                let origin = if is_horizontal {
+                    PhysicalPoint::new(
+                        progress,
+                        (content_size.height - thumb_size.height).scale_by(0.5),
+                    )
+                } else {
+                    PhysicalPoint::new(
+                        (content_size.width - thumb_size.width).scale_by(0.5),
+                        progress,
+                    )
+                };
+                set_border_box_origin(&mut thumb, origin);
+            }
+        }
+    }
+}
+
+fn position_range_fill(
+    track: &mut BoxFragment,
+    range_size: PhysicalSize<Au>,
+    thumb_size: PhysicalSize<Au>,
+    fraction: f32,
+    is_horizontal: bool,
+) {
+    for child in &track.children {
+        if !has_pseudo(child, PseudoElement::SliderFill) {
+            continue;
+        }
+        let Some(fill) = child.retrieve_box_fragment() else {
+            continue;
+        };
+        let mut fill = fill.borrow_mut();
+        let fill_size = fill.border_rect().size;
+        if is_horizontal {
+            let traversable = range_size.width - thumb_size.width;
+            let width = traversable.scale_by(fraction) + thumb_size.width.scale_by(0.5);
+            set_border_box_size(&mut fill, PhysicalSize::new(width, fill_size.height));
+            set_border_box_origin(&mut fill, PhysicalPoint::new(Au::zero(), Au::zero()));
+        } else {
+            let traversable = range_size.height - thumb_size.height;
+            let height = traversable.scale_by(fraction) + thumb_size.height.scale_by(0.5);
+            set_border_box_size(&mut fill, PhysicalSize::new(fill_size.width, height));
+            set_border_box_origin(&mut fill, PhysicalPoint::new(Au::zero(), Au::zero()));
+        }
+    }
+}
+
+fn has_pseudo(fragment: &Fragment, pseudo: PseudoElement) -> bool {
+    fragment
+        .tag()
+        .is_some_and(|tag| tag.pseudo_element_chain.innermost() == Some(pseudo))
+}
+
+fn set_border_box_origin(fragment: &mut BoxFragment, origin: PhysicalPoint<Au>) {
+    fragment.base.rect.origin = PhysicalPoint::new(
+        origin.x + fragment.border.left + fragment.padding.left,
+        origin.y + fragment.border.top + fragment.padding.top,
+    );
+}
+
+fn set_border_box_size(fragment: &mut BoxFragment, size: PhysicalSize<Au>) {
+    fragment.base.rect.size = PhysicalSize::new(
+        Au::zero().max(
+            size.width
+                - fragment.border.left
+                - fragment.border.right
+                - fragment.padding.left
+                - fragment.padding.right,
+        ),
+        Au::zero().max(
+            size.height
+                - fragment.border.top
+                - fragment.border.bottom
+                - fragment.padding.top
+                - fragment.padding.bottom,
+        ),
+    );
 }

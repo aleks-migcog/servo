@@ -115,6 +115,7 @@ impl IndependentFormattingContext {
         self.base.clear_fragments_and_fragment_cache();
         *self.base.cached_inline_content_size.borrow_mut() = None;
         self.base.repair_style(&node_and_style_info.style);
+        self.base.specific_layout_info = range_input_layout_info(node_and_style_info);
     }
 
     pub(crate) fn construct(
@@ -133,8 +134,10 @@ impl IndependentFormattingContext {
             contents,
             propagated_data,
         );
+        let mut base = LayoutBoxBase::new(base_fragment_info, node_and_style_info.style.clone());
+        base.specific_layout_info = range_input_layout_info(node_and_style_info);
         Self {
-            base: LayoutBoxBase::new(base_fragment_info, node_and_style_info.style.clone()),
+            base,
             contents,
             propagated_data,
         }
@@ -482,7 +485,7 @@ impl IndependentFormattingContext {
         // out abspos descendants here against a still-zero parent inline
         // size.
         let mut child_positioning_context = positioning_context.fresh_child();
-        let result = self.layout_without_caching(
+        let mut result = self.layout_without_caching(
             layout_context,
             &mut child_positioning_context,
             containing_block_for_children,
@@ -490,6 +493,9 @@ impl IndependentFormattingContext {
             preferred_aspect_ratio,
             lazy_block_size,
         );
+        if result.specific_layout_info.is_none() {
+            result.specific_layout_info = self.base.specific_layout_info.clone();
+        }
 
         // ISSUE_11: do NOT cache results produced during an
         // intrinsic-sizing probe. The probe layout deferred abspos
@@ -579,6 +585,13 @@ impl IndependentFormattingContext {
             },
         }
     }
+}
+
+fn range_input_layout_info(
+    node_and_style_info: &NodeAndStyleInfo,
+) -> Option<crate::fragment_tree::SpecificLayoutInfo> {
+    let value_fraction = node_and_style_info.node.range_value_fraction_for_layout()?;
+    Some(crate::fragment_tree::SpecificLayoutInfo::RangeInput { value_fraction })
 }
 
 impl ComputeInlineContentSizes for IndependentFormattingContextContents {

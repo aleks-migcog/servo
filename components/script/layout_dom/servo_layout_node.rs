@@ -26,6 +26,7 @@ use style::selector_parser::PseudoElement;
 use super::ServoLayoutElement;
 use crate::dom::bindings::root::LayoutDom;
 use crate::dom::element::Element;
+use crate::dom::html::input_element::HTMLInputElement;
 use crate::dom::node::{Node, NodeFlags, NodeTypeIdWrapper};
 use crate::layout_dom::{
     ServoDangerousStyleNode, ServoLayoutDomTypeBundle, ServoLayoutNodeChildrenIterator,
@@ -78,6 +79,14 @@ impl<'dom> ServoLayoutNode<'dom> {
     /// made public or exposed in the `LayoutNode` trait.
     pub(super) unsafe fn dangerous_first_child(&self) -> Option<Self> {
         self.node.first_child_ref().map(Into::into)
+    }
+
+    /// Return this node's live range-control value as a fraction of its range,
+    /// if it is an `<input type=range>`.
+    pub fn range_value_fraction_for_layout(&self) -> Option<f32> {
+        self.node
+            .downcast::<HTMLInputElement>()
+            .and_then(|input| input.unsafe_get().range_value_fraction_for_layout())
     }
 
     /// Get the next sibling of this node.

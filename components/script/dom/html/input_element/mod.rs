@@ -485,6 +485,24 @@ impl HTMLInputElement {
         }
     }
 
+    pub(crate) fn range_value_fraction_for_layout(&self) -> Option<f32> {
+        if !matches!(*self.input_type(), InputType::Range(_)) {
+            return None;
+        }
+
+        let min = self.minimum()?;
+        let max = self.maximum()?;
+        if min > max || (max - min).abs() < f64::EPSILON {
+            return Some(0.0);
+        }
+
+        let value = self
+            .convert_string_to_number(&self.Value().str())
+            .unwrap_or(self.default_range_value())
+            .clamp(min, max);
+        Some(((value - min) / (max - min)) as f32)
+    }
+
     /// <https://html.spec.whatwg.org/multipage#concept-input-step-default>
     fn default_step(&self) -> Option<f64> {
         match *self.input_type() {

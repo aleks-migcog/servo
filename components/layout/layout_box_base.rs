@@ -46,6 +46,7 @@ pub(crate) struct LayoutBoxBase {
     pub cached_layout_result: AtomicRefCell<Option<LayoutResultAndInputs>>,
     pub fragments: AtomicRefCell<Vec<Fragment>>,
     pub parent_box: Option<WeakLayoutBox>,
+    pub specific_layout_info: Option<SpecificLayoutInfo>,
 }
 
 impl LayoutBoxBase {
@@ -58,6 +59,7 @@ impl LayoutBoxBase {
             cached_layout_result: AtomicRefCell::default(),
             fragments: AtomicRefCell::default(),
             parent_box: None,
+            specific_layout_info: None,
         }
     }
 

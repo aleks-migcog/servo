@@ -210,15 +210,15 @@ input[type="range"] {
 
 input[type="range"]::slider-track,
 input[type="range"]::slider-fill {
-  /* All slider elements are centered vertically. */
-  top: 50%;
-  transform: translateY(-50%);
-  position: absolute;
+  position: static !important;
 }
 
 input[type="range"]::slider-thumb {
-  top: 50%;
-  position: absolute;
+  /* Layout handles range shadow geometry specially. Author margin/top/left
+     positioning is intentionally ignored, matching Gecko's range frame model. */
+  display: block !important;
+  float: none !important;
+  position: static !important;
 }
 
 input[type="range"]::slider-track,
