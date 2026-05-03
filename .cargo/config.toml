@@ -33,4 +33,9 @@ MACOSX_DEPLOYMENT_TARGET = "13.0"
 RUSTC_BOOTSTRAP = "crown,script,script_bindings,style_tests,mozjs,mozjs_sys"
 
 [build]
+# Shared with Projects6/servo-unity-6 Makefile (CARGO_TARGET_DIR env).
+# Pinning here ensures direct cargo/mach invocations from this dir
+# also write to the shared target, instead of creating a duplicate
+# ./target/ that wastes ~18 GB.
+target-dir = "/Users/developer/Projects4/.cargo-target"
 rustdocflags = ["--document-private-items"]
