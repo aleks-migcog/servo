@@ -39,9 +39,9 @@ use crate::style_ext::ComputedValuesExt;
 /// How to treat `overflow: auto` when deciding whether to reserve a gutter.
 ///
 /// Per CSS Overflow Module Level 3, `auto` only renders a scrollbar when
-/// content actually overflows; a fully spec-correct implementation would
-/// thus require a two-pass layout (lay out, measure, re-lay out with
-/// gutter if scrollbar appeared). For now we approximate.
+/// content actually overflows. Some formatting contexts can do a two-pass
+/// probe and use [`ScrollbarAutoPolicy::OnlyIfOverflows`]; others still use
+/// the pessimistic one-pass approximation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ScrollbarAutoPolicy {
     /// Treat `Overflow::Auto` identically to `Overflow::Scroll` and always
@@ -52,6 +52,11 @@ pub(crate) enum ScrollbarAutoPolicy {
     /// `taffy/stylo_taffy/convert.rs`, which maps `auto` to taffy
     /// `Overflow::Scroll` for the same reason.
     TreatAsScroll,
+
+    /// Do not reserve gutter space for `Overflow::Auto` during the initial
+    /// layout probe. Callers that can detect real overflow may then rerun
+    /// layout with [`ScrollbarAutoPolicy::TreatAsScroll`] only when needed.
+    OnlyIfOverflows,
 }
 
 /// Compute the inline / block sides of a scroll container's *child*
@@ -96,6 +101,7 @@ pub(crate) fn scrollbar_gutter(
         Overflow::Scroll => true,
         Overflow::Auto => match auto_policy {
             ScrollbarAutoPolicy::TreatAsScroll => true,
+            ScrollbarAutoPolicy::OnlyIfOverflows => false,
         },
         // `Visible`, `Hidden`, `Clip` never paint a classic scrollbar.
         _ => false,

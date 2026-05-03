@@ -12,6 +12,7 @@ use rayon::iter::{
     IndexedParallelIterator, IntoParallelRefIterator, ParallelDrainRange, ParallelIterator,
 };
 use style::Zero;
+use style::computed_values::overflow_x::T as Overflow;
 use style::computed_values::position::T as Position;
 use style::logical_geometry::Direction;
 use style::properties::ComputedValues;
@@ -615,8 +616,100 @@ impl FlexContainer {
         containing_block: &ContainingBlock,
         lazy_block_size: &LazySize,
     ) -> IndependentFormattingContextLayoutResult {
+        let overflow = self.style.effective_overflow(FragmentFlags::empty());
+
+        // TODO: horizontal scrollbar auto-detection needs its own inline-axis
+        // overflow probe. Keep `overflow-x: auto` pessimistic for now.
+        if overflow.x == Overflow::Auto {
+            let scrollbar_gutter = scrollbar_gutter_for_device(
+                &self.style,
+                FragmentFlags::empty(),
+                layout_context.style_context.stylist.device(),
+                ScrollbarAutoPolicy::TreatAsScroll,
+            );
+            return self.layout_with_scrollbar_gutter(
+                layout_context,
+                positioning_context,
+                containing_block,
+                lazy_block_size,
+                scrollbar_gutter,
+            );
+        }
+
+        if overflow.y == Overflow::Auto {
+            let probe_gutter = scrollbar_gutter_for_device(
+                &self.style,
+                FragmentFlags::empty(),
+                layout_context.style_context.stylist.device(),
+                ScrollbarAutoPolicy::OnlyIfOverflows,
+            );
+            let mut probe_positioning_context = positioning_context.fresh_child();
+            let probe_result = self.layout_with_scrollbar_gutter(
+                layout_context,
+                &mut probe_positioning_context,
+                containing_block,
+                lazy_block_size,
+                probe_gutter,
+            );
+            let container_block_size = lazy_block_size.resolve(|| probe_result.content_block_size);
+            if !Self::layout_result_overflows_block_axis(&probe_result, container_block_size) {
+                positioning_context.append(probe_positioning_context);
+                return probe_result;
+            }
+
+            let scrollbar_gutter = scrollbar_gutter_for_device(
+                &self.style,
+                FragmentFlags::empty(),
+                layout_context.style_context.stylist.device(),
+                ScrollbarAutoPolicy::TreatAsScroll,
+            );
+            return self.layout_with_scrollbar_gutter(
+                layout_context,
+                positioning_context,
+                containing_block,
+                lazy_block_size,
+                scrollbar_gutter,
+            );
+        }
+
+        let scrollbar_gutter = scrollbar_gutter_for_device(
+            &self.style,
+            FragmentFlags::empty(),
+            layout_context.style_context.stylist.device(),
+            ScrollbarAutoPolicy::TreatAsScroll,
+        );
+        self.layout_with_scrollbar_gutter(
+            layout_context,
+            positioning_context,
+            containing_block,
+            lazy_block_size,
+            scrollbar_gutter,
+        )
+    }
+
+    fn layout_result_overflows_block_axis(
+        result: &IndependentFormattingContextLayoutResult,
+        container_block_size: Au,
+    ) -> bool {
+        result.fragments.iter().any(|fragment| {
+            let Some(base) = fragment.base() else {
+                return false;
+            };
+            base.rect.origin.y + base.rect.size.height > container_block_size
+        })
+    }
+
+    fn layout_with_scrollbar_gutter(
+        &self,
+        layout_context: &LayoutContext,
+        positioning_context: &mut PositioningContext,
+        containing_block: &ContainingBlock,
+        lazy_block_size: &LazySize,
+        scrollbar_gutter: LogicalSides<Au>,
+    ) -> IndependentFormattingContextLayoutResult {
         // Reserve inline-end / block-end gutter for any classic scrollbar
-        // this flex container would render due to `overflow: scroll/auto`.
+        // this flex container would render due to `overflow: scroll`, or
+        // `overflow: auto` when the caller's policy decides it is needed.
         // Servo does not paint the scrollbars itself yet (see ISSUES_0503
         // bug "scrollbar gutter not reserved"), but embedders such as
         // Host6 overlay them on top of the rendered surface; without this
@@ -624,12 +717,6 @@ impl FlexContainer {
         // app_simple DetailPanel symptom). Container's outer/border rect
         // stays unchanged - we only shrink the area visible to children
         // through `flex_context.containing_block` and downstream sizing.
-        let scrollbar_gutter = scrollbar_gutter_for_device(
-            &self.style,
-            FragmentFlags::empty(),
-            layout_context.style_context.stylist.device(),
-            ScrollbarAutoPolicy::TreatAsScroll,
-        );
         let scrollbar_inline_sum = scrollbar_gutter.inline_sum();
         let scrollbar_block_sum = scrollbar_gutter.block_sum();
         let child_inline = (containing_block.size.inline - scrollbar_inline_sum).max(Au::zero());
