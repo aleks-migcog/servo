@@ -658,39 +658,50 @@ impl DocumentEventHandler {
             return;
         }
 
-        let Some(new_target) = hit_test_result
+        let new_target = hit_test_result
             .node
             .inclusive_ancestors(ShadowIncluding::Yes)
-            .find_map(DomRoot::downcast::<Element>)
-        else {
-            return;
-        };
+            .find_map(DomRoot::downcast::<Element>);
 
         let old_hover_target = self.current_hover_target.get();
-        let target_has_changed = old_hover_target
-            .as_ref()
-            .is_none_or(|old_target| *old_target != new_target);
+        let target_has_changed = match (&old_hover_target, &new_target) {
+            (Some(old_target), Some(new_target)) => old_target != new_target,
+            (None, None) => false,
+            _ => true,
+        };
 
         // Here we know the target has changed, so we must update the state,
         // dispatch mouseout to the previous one, mouseover to the new one.
         if target_has_changed {
+            let common_hover_ancestor =
+                old_hover_target
+                    .as_ref()
+                    .zip(new_target.as_ref())
+                    .and_then(|(old_target, new_target)| {
+                        old_target
+                            .upcast::<Node>()
+                            .common_ancestor_in_flat_tree(new_target.upcast::<Node>())
+                    });
+
             // Dispatch pointerout/mouseout and pointerleave/mouseleave to previous target.
             if let Some(old_target) = self.current_hover_target.get() {
-                let old_target_is_ancestor_of_new_target = old_target
-                    .upcast::<Node>()
-                    .is_ancestor_of(new_target.upcast::<Node>());
+                let old_target_node = old_target.upcast::<Node>();
+                let old_target_is_ancestor_of_new_target =
+                    new_target.as_ref().is_some_and(|new_target| {
+                        old_target_node.is_ancestor_of(new_target.upcast::<Node>())
+                    });
 
-                // If the old target is an ancestor of the new target, this can be skipped
-                // completely, since the node's hover state will be reset below.
-                if !old_target_is_ancestor_of_new_target {
-                    for element in old_target
-                        .upcast::<Node>()
-                        .inclusive_ancestors(ShadowIncluding::No)
-                        .filter_map(DomRoot::downcast::<Element>)
-                    {
-                        element.set_hover_state(false);
-                        self.element_for_activation(element).set_active_state(false);
-                    }
+                for element in old_target_node
+                    .inclusive_ancestors_in_flat_tree()
+                    .take_while(|node| {
+                        common_hover_ancestor
+                            .as_deref()
+                            .is_none_or(|common_ancestor| common_ancestor != &**node)
+                    })
+                    .filter_map(DomRoot::downcast::<Element>)
+                {
+                    element.set_hover_state(false);
+                    self.element_for_activation(element).set_active_state(false);
                 }
 
                 let mouse_out_event = MouseEvent::new_for_platform_motion_event(
@@ -702,7 +713,7 @@ impl DocumentEventHandler {
                 );
                 mouse_out_event
                     .upcast::<Event>()
-                    .set_related_target(Some(new_target.upcast()));
+                    .set_related_target(new_target.as_ref().map(|target| target.upcast()));
 
                 // Fire pointerout before mouseout
                 mouse_out_event
@@ -716,7 +727,9 @@ impl DocumentEventHandler {
 
                 if !old_target_is_ancestor_of_new_target {
                     let event_target = DomRoot::from_ref(old_target.upcast::<Node>());
-                    let moving_into = Some(DomRoot::from_ref(new_target.upcast::<Node>()));
+                    let moving_into = new_target
+                        .as_ref()
+                        .map(|target| DomRoot::from_ref(target.upcast::<Node>()));
                     self.handle_mouse_enter_leave_event(
                         cx,
                         event_target,
@@ -728,50 +741,63 @@ impl DocumentEventHandler {
                 }
             }
 
-            // Dispatch pointerover/mouseover and pointerenter/mouseenter to new target.
-            for element in new_target
-                .upcast::<Node>()
-                .inclusive_ancestors(ShadowIncluding::Yes)
-                .filter_map(DomRoot::downcast::<Element>)
-            {
-                element.set_hover_state(true);
+            if let Some(ref new_target) = new_target {
+                // Dispatch pointerover/mouseover and pointerenter/mouseenter to new target.
+                for element in new_target
+                    .upcast::<Node>()
+                    .inclusive_ancestors_in_flat_tree()
+                    .take_while(|node| {
+                        common_hover_ancestor
+                            .as_deref()
+                            .is_none_or(|common_ancestor| common_ancestor != &**node)
+                    })
+                    .filter_map(DomRoot::downcast::<Element>)
+                {
+                    element.set_hover_state(true);
+                }
+
+                let mouse_over_event = MouseEvent::new_for_platform_motion_event(
+                    cx,
+                    &self.window,
+                    FireMouseEventType::Over,
+                    &hit_test_result,
+                    input_event,
+                );
+                mouse_over_event
+                    .upcast::<Event>()
+                    .set_related_target(old_hover_target.as_ref().map(|target| target.upcast()));
+
+                // Fire pointerover before mouseover
+                mouse_over_event
+                    .to_pointer_hover_event("pointerover", CanGc::from_cx(cx))
+                    .upcast::<Event>()
+                    .dispatch(new_target.upcast(), false, CanGc::from_cx(cx));
+
+                mouse_over_event.upcast::<Event>().dispatch(
+                    new_target.upcast(),
+                    false,
+                    CanGc::from_cx(cx),
+                );
+
+                let moving_from = old_hover_target
+                    .as_ref()
+                    .map(|old_target| DomRoot::from_ref(old_target.upcast::<Node>()));
+                let event_target = DomRoot::from_ref(new_target.upcast::<Node>());
+                self.handle_mouse_enter_leave_event(
+                    cx,
+                    event_target,
+                    moving_from,
+                    FireMouseEventType::Enter,
+                    &hit_test_result,
+                    input_event,
+                );
             }
-
-            let mouse_over_event = MouseEvent::new_for_platform_motion_event(
-                cx,
-                &self.window,
-                FireMouseEventType::Over,
-                &hit_test_result,
-                input_event,
-            );
-            mouse_over_event
-                .upcast::<Event>()
-                .set_related_target(old_hover_target.as_ref().map(|target| target.upcast()));
-
-            // Fire pointerover before mouseover
-            mouse_over_event
-                .to_pointer_hover_event("pointerover", CanGc::from_cx(cx))
-                .upcast::<Event>()
-                .dispatch(new_target.upcast(), false, CanGc::from_cx(cx));
-
-            mouse_over_event.upcast::<Event>().dispatch(
-                new_target.upcast(),
-                false,
-                CanGc::from_cx(cx),
-            );
-
-            let moving_from =
-                old_hover_target.map(|old_target| DomRoot::from_ref(old_target.upcast::<Node>()));
-            let event_target = DomRoot::from_ref(new_target.upcast::<Node>());
-            self.handle_mouse_enter_leave_event(
-                cx,
-                event_target,
-                moving_from,
-                FireMouseEventType::Enter,
-                &hit_test_result,
-                input_event,
-            );
         }
+
+        let Some(new_target) = new_target else {
+            self.update_current_hover_target_and_status(None);
+            return;
+        };
 
         // Send mousemove event to topmost target, unless it's an iframe, in which case
         // `Paint` should have also sent an event to the inner document.
