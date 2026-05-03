@@ -2132,11 +2132,33 @@ impl VirtualMethods for HTMLInputElement {
                 match mutation {
                     AttributeMutation::Set(..) => {
                         // https://html.spec.whatwg.org/multipage/#input-type-change
+                        //
+                        // The spec algorithm is defined in terms of state
+                        // *transitions*; setting `type` to a value that maps to
+                        // the same state is a no-op. Frameworks (React, in
+                        // particular) re-set `input.type` on every commit to
+                        // enforce attribute ordering, so this idempotent path
+                        // is hot. Running the destructive body would replace
+                        // `self.input_type` with a fresh `Default` variant of
+                        // the same enum case, discarding typed state that the
+                        // input depends on across events - notably
+                        // `RangeInputType::drag_state`, whose loss makes the
+                        // next `mousemove` early-return on `!Dragging` and
+                        // breaks slider thumb drag entirely.
+                        let new_input_type =
+                            InputType::new_from_atom(attr.value().as_atom());
+                        let same_state = std::mem::discriminant(&*self.input_type())
+                            == std::mem::discriminant(&new_input_type);
+                        if same_state {
+                            // No state transition - leave existing typed state
+                            // (drag_state, shadow tree, etc.) untouched.
+                            return;
+                        }
+
                         let (old_value_mode, old_idl_value) = (self.value_mode(), self.Value());
                         let previously_selectable = self.selection_api_applies();
 
-                        *self.input_type.borrow_mut() =
-                            InputType::new_from_atom(attr.value().as_atom());
+                        *self.input_type.borrow_mut() = new_input_type;
                         self.is_textual_or_password
                             .set(self.input_type().is_textual_or_password());
 
