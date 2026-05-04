@@ -1062,13 +1062,18 @@ impl DocumentEventHandler {
             // https://w3c.github.io/pointerevents/#dfn-handle-native-mouse-up
             MouseButtonAction::Up => {
                 // Step 6. Dispatch pointerup event.
+                //
+                // Per spec, pointerup fires when the LAST held button is
+                // released (transition from "at least one button down" to
+                // "no buttons down"). For chorded releases other than the
+                // last, dispatch pointermove. The check therefore has to
+                // run on the POST-decrement count, mirroring the
+                // PRE-increment check in the Down arm above.
                 let down_button_count = self.down_button_count.get();
+                let new_down_button_count = down_button_count.saturating_sub(1);
+                self.down_button_count.set(new_down_button_count);
 
-                if down_button_count > 0 {
-                    self.down_button_count.set(down_button_count - 1);
-                }
-
-                let event_type = if down_button_count == 0 {
+                let event_type = if new_down_button_count == 0 {
                     "pointerup"
                 } else {
                     "pointermove"
